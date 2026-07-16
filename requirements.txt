@@ -1,0 +1,19 @@
+# Python 3.12 (developed on 3.12.7)
+# Install:  pip install -r requirements.txt
+#
+# torch is CPU here; for CUDA install the matching build from https://pytorch.org
+# first, then the rest of this file.
+
+torch==2.12.1
+numpy==1.26.4
+pandas==2.3.3
+matplotlib==3.11.0
+
+# DHN hydraulic simulator: builds the Network object and is the physics/oracle
+# reference for the spike gates. Pulls networkx (2.8.8) as a dependency.
+pydhn==0.1.3
+
+# Only needed to (re)fetch outdoor weather in dhn_gnn.generate. The bundled
+# data/weather CSV is already cached, so generation works offline without this.
+meteostat==2.1.4
+

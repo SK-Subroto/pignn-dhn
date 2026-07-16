@@ -1,0 +1,24 @@
+# --- Large solved datasets (~80 MB of CSVs each) ------------------------------
+# Keep the small inputs (data/network, data/measurements, data/weather) in git;
+# ignore the big PyDHN solved outputs. Regenerate any of them with
+#   python -m dhn_gnn.generate --version <name>
+# If you must version these, use Git LFS instead of removing this rule.
+data/solved_*/
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# --- Outputs ------------------------------------------------------------------
+results/*.png
+results/*.txt
+
+# --- OS / editor --------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
