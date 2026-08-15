@@ -49,6 +49,9 @@ class DHNUnrolledSolver(nn.Module):
         self.register_buffer("B_int", ops.B[internal].float())          # (L_int, E)
         self.register_buffer("Z", ops.B[internal].t().float())          # (E, L_int)
         self.register_buffer("A", ops.A.float())                        # (N, E)
+        # |A| is used every unrolled step; materializing it once instead of per
+        # step saves a 2M-element allocation x K (~11% of the forward pass).
+        self.register_buffer("A_abs", ops.A.abs().float())               # (N, E)
         self.register_buffer("pipe_mask", pm)
         self.register_buffer("diameter", ops.diameter.float())
         self.register_buffer("length", ops.length.float())
@@ -102,12 +105,20 @@ class DHNUnrolledSolver(nn.Module):
         return self.B_int @ self._pipe_dp(mdot)          # (L_int,)
 
     # --- forward -------------------------------------------------------------
-    def forward(self, mdot0):
+    def forward(self, mdot0, tol=None):
         """
         mdot0: (E,) boundary-feasible reference flow.
+        tol:   optional early-exit tolerance in Pa. When set AND the module is in
+               eval mode, unrolling stops as soon as max|residual| < tol, so an
+               easy timestep costs far fewer than K steps. Deliberately inert in
+               training mode: each step owns a separate head (`self.heads[k]`),
+               so exiting early would starve the later heads of gradient and
+               leave them at their zero-init exactly on the hard samples that
+               need them. Training always runs the full fixed K.
         Returns (mdot_final, residual_terms, c_hist):
-          residual_terms: K+1 internal-loop residuals (for the physics loss)
-          c_hist:         K per-step loop corrections c_k (for deep supervision)
+          residual_terms: internal-loop residual after each executed step
+                          (K of them, or fewer if the early exit fired)
+          c_hist:         per-step loop corrections c_k (for deep supervision)
 
         Update is a *smooth, damped, bounded* step  dc = step_scale * tanh(head(...)):
         no hard velocity-cap max() (non-smooth gradient) and no compounding Armijo in
@@ -131,7 +142,7 @@ class DHNUnrolledSolver(nn.Module):
 
             node_feat = torch.stack([
                 self.is_boundary, injection,
-                self.A @ dp, self.A.abs() @ mdot.abs(),
+                self.A @ dp, self.A_abs @ mdot.abs(),
             ], dim=-1)
             x = self.node_proj(node_feat)
 
@@ -156,5 +167,9 @@ class DHNUnrolledSolver(nn.Module):
             c_hist.append(c)
             # post-update residual: depends on dc, so its loss trains head_k locally
             residual_terms.append(self._residual(self._edge_flow(mdot0, c)))
+
+            if tol is not None and not self.training:
+                if residual_terms[-1].abs().max() < tol:
+                    break
 
         return self._edge_flow(mdot0, c), residual_terms, c_hist

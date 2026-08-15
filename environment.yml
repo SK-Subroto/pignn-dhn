@@ -1,0 +1,13 @@
+name: pignn_env
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - torch==2.12.1
+      - numpy==1.26.4
+      - pandas==2.3.3
+      - matplotlib==3.11.0
+      - meteostat==2.1.4
+      - git+https://github.com/idiap/pydhn.git
