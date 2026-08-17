@@ -33,10 +33,11 @@ import numpy as np
 import pandas as pd
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
 from dhn_gnn.data import network_operators as netops
 from dhn_gnn.model.initializer import DHNInitializerSolver
+from dhn_gnn.model.newton import NewtonSolver
 from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
 
 
@@ -71,8 +72,9 @@ def bench_initializer(ops, samples, tol, mode, ckpt=None, n_newton=20):
         m = DHNInitializerSolver(ops, **ck["model_kwargs"]).float()
         m.load_state_dict(ck["state_dict"])
     else:
-        # zero-init head => predict_c0 returns 0 => a genuine cold start
-        m = DHNInitializerSolver(ops, **config.INIT_MODEL_KWARGS).float()
+        # the explicit pure-physics solver: no learned parameters at all, so the
+        # cold/warm variants cannot accidentally benefit from a trained network
+        m = NewtonSolver(ops, n_newton=config.INIT_MODEL_KWARGS["n_newton"]).float()
     m.eval()
 
     steps, finals, guess_res = [], [], []
@@ -98,14 +100,18 @@ def bench_initializer(ops, samples, tol, mode, ckpt=None, n_newton=20):
                 guess=np.array(guess_res), ms=(time.time() - t0) / len(samples) * 1e3)
 
 
-def main():
+def _standalone_args():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n-ts", type=int, default=149, help="held-out timesteps to use")
     ap.add_argument("--tol", type=float, default=config.EVAL_TOL_PA)
     ap.add_argument("--split-every", type=int, default=5)
-    args = ap.parse_args()
+    return ap.parse_args()
 
-    from dhn_gnn.train import make_samples
+
+def main(args=None):
+    args = args if args is not None else _standalone_args()
+
+    from dhn_gnn.training import make_samples
     ops = netops.build_operators()
     n_ts = len(pd.read_csv(config.MASS_FLOW_CSV, index_col=0))
     _, test_ts = config.split_timesteps(n_ts, args.split_every)

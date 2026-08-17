@@ -33,12 +33,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
 from dhn_gnn.data import network_operators as netops
 from dhn_gnn.data.pressure import PressureReconstructor
 from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
-from dhn_gnn.train import load_checkpoint
+from dhn_gnn.training import load_checkpoint
 
 RES = config.RESULTS_DIR
 
@@ -72,7 +72,7 @@ def run(model, ops, timesteps, rec, p_true_df, tol=None, flow_df=None, device=No
             mdot0 = mt - Z @ a_star           # boundary-feasible, zero-circulation start
             mdot_out, terms, c_hist = model(mdot0, tol=tol)
 
-            dp_pred = model._pipe_dp(mdot_out)
+            dp_pred = model.pipe_dp(mdot_out)
             anchors = torch.as_tensor(
                 p_true_df.iloc[ts].to_numpy(np.float64)[rec.anchors])
             # pressure reconstruction stays on CPU in float64: it is a one-shot
@@ -260,7 +260,7 @@ def _block(title, m):
     ]
 
 
-def main():
+def _standalone_args():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tol", type=float, default=config.EVAL_TOL_PA,
                     help="early-exit tolerance in Pa (0 disables)")
@@ -273,7 +273,11 @@ def main():
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu")
     ap.add_argument("--ckpt", type=Path, default=None,
                     help="checkpoint to evaluate (default: the one for --arch)")
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def main(args=None):
+    args = args if args is not None else _standalone_args()
     tol = args.tol if args.tol > 0 else None
     dev = config.get_device(args.device)
 

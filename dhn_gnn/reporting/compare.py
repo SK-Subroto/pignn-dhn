@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
 from dhn_gnn.data import network_operators as netops
 from dhn_gnn.data.pressure import PressureReconstructor
@@ -45,7 +45,7 @@ def _stats(pred, true):
     )
 
 
-def main():
+def main(args=None):
     ops = netops.build_operators()
     pipe = ops.pipe_mask.numpy()
 
