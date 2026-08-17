@@ -50,7 +50,10 @@ CHECKPOINT = RESULTS_DIR / "model.pt"
 # K is shared by train.py and evaluate.py ON PURPOSE: the solver carries one
 # nn.Linear head PER unrolled step, so a checkpoint trained at K steps cannot be
 # loaded into a model built with a different K. Changing K here changes both.
-K_UNROLLED = 20
+# Full Newton solves the exact 12x12 loop system, so it converges quadratically and
+# needs no damping: it passes PyDHN's own 50 Pa mark in ~4 steps and reaches 1e-4 Pa
+# by step 20, where damped diagonal Newton is still at ~30 Pa. K=10 leaves margin.
+K_UNROLLED = 10
 
 MODEL_KWARGS = dict(
     K=K_UNROLLED,
@@ -58,7 +61,8 @@ MODEL_KWARGS = dict(
     n_heads=4,
     num_attn_layers=2,
     step_scale=0.5,
-    newton_damping=0.5,
+    newton_damping=1.0,
+    newton_mode="full",
 )
 
 # Early-exit tolerance for evaluation: stop unrolling once the internal-loop
@@ -67,6 +71,42 @@ MODEL_KWARGS = dict(
 # NOT the 15 Pa figure quoted in train.py: the solver bottoms out around 24 Pa on
 # this network, so a 15 Pa tolerance never fires and the early exit is dead code.
 EVAL_TOL_PA = 50.0
+
+# Learned-initializer architecture (dhn_gnn.model.initializer): one attention pass
+# predicts the loop-space solution, then a few exact Newton steps polish it.
+INIT_MODEL_KWARGS = dict(
+    n_newton=4,
+    d_model=64,
+    n_heads=4,
+    num_attn_layers=2,
+)
+CHECKPOINT_INIT = RESULTS_DIR / "model_init.pt"
+
+
+def get_device(pref: str = "auto"):
+    """
+    Resolve the compute device. 'auto' picks CUDA when available, else CPU.
+
+    A caution specific to this model, measured on this network: at batch size 1 the
+    per-step tensors are tiny (1352 nodes, d_model 64) and the unroll is sequential,
+    so CUDA kernel-launch overhead dominates and the GPU is NOT reliably faster than
+    CPU -- it can be slower. The GPU only pays off once many timesteps are solved in
+    one batched pass, which the learned-initializer architecture makes possible
+    (timesteps are independent) and warm-starting does not.
+    """
+    import torch
+    if pref == "cpu":
+        return torch.device("cpu")
+    if pref == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA requested but unavailable. Check: torch.__version__ must be a "
+                "+cu build (a +cpu build never sees a GPU), the NVIDIA driver must "
+                "be recent enough for that CUDA version, and the GPU's compute "
+                "capability must appear in torch.cuda.get_arch_list()."
+            )
+        return torch.device("cuda")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # --- Train / test split --------------------------------------------------------

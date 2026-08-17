@@ -31,16 +31,32 @@ def _slog(x):
 class DHNUnrolledSolver(nn.Module):
     def __init__(self, ops, K: int = 20, d_model: int = 64, n_heads: int = 4,
                  num_attn_layers: int = 2, gamma: float = 0.9, step_scale: float = 0.5,
-                 newton_damping: float = 0.5, rho: float = config.RHO_50, mu: float = config.MU_50):
-        # Each step is a damped diagonal-Newton base step (from the known operator)
-        # plus a bounded learned GNN refinement:
-        #     dc = -newton_damping * (r / J_diag)  +  step_scale * tanh(head(...))
-        # With the head zero-init the model STARTS as damped diagonal Newton (already
-        # ~few Pa here) and learns to improve toward the full-Newton solution. This is
-        # a stronger, physics-informed inductive bias than learning the whole step.
+                 newton_damping: float = 0.5, newton_mode: str = "diagonal",
+                 rho: float = config.RHO_50, mu: float = config.MU_50):
+        # Each step is a Newton base step (from the known operator) plus a bounded
+        # learned GNN refinement:
+        #     dc = -newton_damping * newton_step  +  step_scale * tanh(head(...))
+        # With the head zero-init the model STARTS as pure Newton and learns to
+        # refine it. This is a stronger, physics-informed inductive bias than
+        # learning the whole step.
+        #
+        # `newton_mode` selects the base step:
+        #   "diagonal" - keep only diag(J), i.e. pretend the loops are independent.
+        #                Cheap but the direction is only roughly right, so it needs
+        #                damping (0.5) and converges linearly: ~19 steps to 45 Pa.
+        #   "full"     - solve the actual L_int x L_int loop system J dc = r with
+        #                J = B_int diag(dphi/dm) B_int^T. The cycle-space reduction
+        #                already shrank 1514 unknowns to 12, so this matrix is 12x12:
+        #                forming it is ~218k FLOPs and solving it is negligible.
+        #                Correct direction => no damping needed and quadratic
+        #                convergence, which is what PyDHN gets its ~1.5 iterations
+        #                per timestep from.
         super().__init__()
+        if newton_mode not in ("diagonal", "full"):
+            raise ValueError(f"newton_mode must be 'diagonal' or 'full', got {newton_mode!r}")
         self.K, self.gamma = K, gamma
         self.step_scale, self.newton_damping = step_scale, newton_damping
+        self.newton_mode = newton_mode
         self.rho, self.mu = rho, mu
 
         # --- fixed operators as buffers (float32 for the net; physics done in fp32) ---
@@ -104,6 +120,22 @@ class DHNUnrolledSolver(nn.Module):
     def _residual(self, mdot):
         return self.B_int @ self._pipe_dp(mdot)          # (L_int,)
 
+    def _newton_step(self, r, dp_der, jac_diag):
+        """
+        Solve for the Newton correction in loop space.
+
+        Full mode builds J = B_int diag(dphi/dmdot) B_int^T, the exact Jacobian of
+        the loop residual w.r.t. the loop correction c. It is symmetric positive
+        semi-definite (dphi/dmdot >= 0 for friction), so a small ridge is enough to
+        keep it invertible when a loop carries near-zero flow and its dphi/dmdot
+        collapses -- without it, `solve` blows up exactly on the easy timesteps.
+        """
+        if self.newton_mode == "diagonal":
+            return r / jac_diag.clamp_min(1e-9)
+        J = self.B_int @ (dp_der.unsqueeze(-1) * self.B_int.t())    # (L_int, L_int)
+        J = J + 1e-9 * torch.eye(J.shape[0], dtype=J.dtype, device=J.device)
+        return torch.linalg.solve(J, r)
+
     # --- forward -------------------------------------------------------------
     def forward(self, mdot0, tol=None):
         """
@@ -157,7 +189,7 @@ class DHNUnrolledSolver(nn.Module):
                  _slog(dp_der).unsqueeze(-1)], dim=-1))                   # (E, d)
             loop_emb = self.absZ.t() @ edge_emb                          # (L_int, d)
             jac_diag = (self.B_int ** 2) @ dp_der                        # (L_int,)
-            newton = r / jac_diag.clamp_min(1e-9)                        # diagonal-Newton step
+            newton = self._newton_step(r, dp_der, jac_diag)              # Newton step
             head_in = torch.cat([loop_emb, _slog(r).unsqueeze(-1),
                                  _slog(jac_diag).unsqueeze(-1), newton.unsqueeze(-1)], -1)
 
