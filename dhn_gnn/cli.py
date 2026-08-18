@@ -51,6 +51,13 @@ def cmd_train(args):
     else:
         from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
         kwargs = dict(config.MODEL_KWARGS, step_scale=args.step_scale)
+        if args.k is not None:
+            kwargs["K"] = args.k
+        if args.newton_mode is not None:
+            kwargs["newton_mode"] = args.newton_mode
+            # the original approach pairs diagonal Newton with 0.5 damping; full
+            # Newton needs none, and carrying 0.5 over would halve every step
+            kwargs["newton_damping"] = 0.5 if args.newton_mode == "diagonal" else 1.0
         model = DHNUnrolledSolver(ops, **kwargs).float().to(dev)
         samples = make_samples(ops, train_ts, device=dev)
         print(f"arch: unrolled  K={kwargs['K']}  step_scale={args.step_scale}  "
@@ -105,6 +112,10 @@ def build_parser():
                    help="subsample this many training timesteps (0 = all)")
     t.add_argument("--step-scale", type=float, default=0.01,
                    help="unrolled only: bound on the learned per-step correction")
+    t.add_argument("--k", type=int, default=None,
+                   help="unrolled only: number of unrolled steps (default config.K_UNROLLED)")
+    t.add_argument("--newton-mode", choices=["full", "diagonal"], default=None,
+                   help="unrolled only: 'diagonal' reproduces the ORIGINAL approach")
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--out", type=Path, default=None,
                    help="checkpoint path; point smoke runs elsewhere so a short "

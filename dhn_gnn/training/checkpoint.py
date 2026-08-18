@@ -33,6 +33,25 @@ def load_checkpoint(ops, path, model_cls):
         )
     ck = torch.load(path, weights_only=False)
     model = model_cls(ops, **ck["model_kwargs"]).float()
-    model.load_state_dict(ck["state_dict"])
+
+    # Buffers are DERIVED from `ops` -- the cycle matrix, incidence, pipe geometry --
+    # so they are rebuilt correctly by the constructor and need not match the
+    # checkpoint. Only learned parameters must. Loading non-strict here means a
+    # checkpoint survives a change to the set of cached buffers (which is exactly
+    # what the base-class refactor did); a missing *parameter* is still fatal.
+    missing, unexpected = model.load_state_dict(ck["state_dict"], strict=False)
+    params = dict(model.named_parameters())
+    missing_params = [k for k in missing if k in params]
+    if missing_params:
+        raise RuntimeError(
+            f"checkpoint {path.name} is missing learned parameters {missing_params}. "
+            "It was produced by a different architecture -- retrain, or load it with "
+            "the model_kwargs it was saved with."
+        )
+    stale = [k for k in list(missing) + list(unexpected) if k not in params]
+    if stale:
+        print(f"note: buffer set changed since this checkpoint was saved "
+              f"({', '.join(sorted(stale))}); rebuilt from the network operators.")
+
     model.eval()
     return model, ck
