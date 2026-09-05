@@ -12,21 +12,21 @@ comparison has to stay runnable. Two measured findings are why it was replaced:
 
   * the learned per-step correction contributes nothing. Trained at every stable
     learning rate found, held-out residual never beat the untrained (pure Newton)
-    starting point -- see the sweep in dhn_gnn/training/unrolled.py.
+    starting point -- see the sweep in dhn_gnn/approaches/unrolled/train.py.
   * running attention K times per timestep dominates runtime for no benefit;
     the same network run ONCE as an initial guess does measurably better
-    (dhn_gnn/model/initializer.py).
+    (dhn_gnn/approaches/initializer/model.py).
 
 State is edge mass flow, but corrections live in internal-cycle space so mass
-conservation holds by construction -- see dhn_gnn.model.base.
+conservation holds by construction -- see dhn_gnn.solvers.physics_base.
 """
 
 import torch
 import torch.nn as nn
 
 from dhn_gnn import config
-from dhn_gnn.model.attention import EdgeBiasedAttention
-from dhn_gnn.model.base import DHNPhysicsBase, slog
+from dhn_gnn.solvers.attention import EdgeBiasedAttention
+from dhn_gnn.solvers.physics_base import DHNPhysicsBase, slog
 
 _slog = slog   # back-compat for anything importing the private name
 

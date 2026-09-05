@@ -32,13 +32,13 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
-from dhn_gnn.data import physics
-from dhn_gnn.data.pressure import PressureReconstructor
-from dhn_gnn.model.initializer import DHNInitializerSolver
-from dhn_gnn.model.newton import NewtonSolver
-from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
-from dhn_gnn.training import make_samples
+from dhn_gnn.physics import operators as netops
+from dhn_gnn.physics import darcy
+from dhn_gnn.physics.pressure import PressureReconstructor
+from dhn_gnn.approaches.initializer.model import DHNInitializerSolver
+from dhn_gnn.solvers.newton import NewtonSolver
+from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
+from dhn_gnn.datasets import make_samples
 
 RES = config.RESULTS_DIR
 FIG = RES / "figures"
@@ -318,6 +318,10 @@ def main(args=None):
     ap.add_argument("--n-ts", type=int, default=400)
     ap.add_argument("--tol", type=float, default=config.EVAL_TOL_PA)
     ap.add_argument("--split-every", type=int, default=5)
+    ap.add_argument("--run-initializer", dest="run_initializer", default="gpu",
+                    help="which results/initializer/<run>/ to score")
+    ap.add_argument("--run-unrolled", dest="run_unrolled", default="2022",
+                    help="which results/unrolled/<run>/ to score")
     a = args if args is not None else ap.parse_args()
 
     FIG.mkdir(parents=True, exist_ok=True); PRED.mkdir(parents=True, exist_ok=True)
@@ -334,18 +338,23 @@ def main(args=None):
     samples = make_samples(ops, ts)
     print(f"{len(ts)} held-out timesteps, tol={a.tol} Pa")
 
-    from dhn_gnn.training import load_checkpoint
+    from dhn_gnn.checkpoints import load_checkpoint
 
     # records_start marks which families log their starting point as curve[0]:
     # Newton and the initializer do, the unrolled solver does not.
     models = {"newton": (NewtonSolver(ops, n_newton=8).float(), True)}
-    mi, ck_i = load_checkpoint(ops, config.RESULTS_DIR / "model_init_gpu.pt",
-                               DHNInitializerSolver)
+    # Which RUN of each approach the report scores. These were the flat files
+    # results/model_init_gpu.pt and results/model_unrolled_2022.pt before the
+    # per-run split; naming them as runs is what lets the report be regenerated
+    # against a different sweep without editing this module.
+    ip = config.resolve_checkpoint("initializer", a.run_initializer)
+    up = config.resolve_checkpoint("unrolled", a.run_unrolled)
+    mi, ck_i = load_checkpoint(ops, ip, DHNInitializerSolver)
     models["initializer"] = (mi, True)
-    up = config.RESULTS_DIR / "model_unrolled_2022.pt"
-    mu, ck_u = load_checkpoint(ops, up if up.exists() else config.CHECKPOINT,
-                               DHNUnrolledSolver)
+    mu, ck_u = load_checkpoint(ops, up, DHNUnrolledSolver)
     models["unrolled"] = (mu, False)
+    print(f"initializer <- {ip}")
+    print(f"unrolled    <- {up}")
 
     runs, scores = {}, {}
     for k in ("unrolled", "newton", "initializer"):
@@ -392,7 +401,7 @@ def main(args=None):
                                   history_stale=len(hist["hydraulics iterations"]) != len(flow_t)),
         consistency=cons,
         checkpoints=dict(initializer=str(config.RESULTS_DIR / "model_init_gpu.pt"),
-                         unrolled=str(up if up.exists() else config.CHECKPOINT)),
+                         unrolled=str(up)),
     )
     (RES / "report_data.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"\nsaved {RES/'report_data.json'}  and {len(list(FIG.glob('*.png')))} figures")

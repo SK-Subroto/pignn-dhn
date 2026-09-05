@@ -107,3 +107,31 @@ def train(model, samples, epochs=400, lr=1e-3, clip=1.0, gamma=0.9,
                else f"epoch {best_ep}")
         print(f"restored best weights from {tag}: monitored residual {best_res:.1f} Pa")
     return model, dict(best_res=best_res, best_epoch=best_ep)
+
+
+def fit(model, samples, cfg, monitor=None, verbose=True):
+    """
+    Uniform entry point for the CLI: config in, (model, history, extra meta) out.
+
+    Approach-specific setup lives here rather than in the CLI so that adding an
+    approach never means editing the command layer. The pre-training measurement
+    is part of the result, not decoration: the zero-init head makes the untrained
+    model an exact Newton solver, so this number is the bar training has to beat,
+    and it is the bar training has so far never beaten.
+    """
+    r0, _ = mean_final_residual(model, samples)
+    if verbose:
+        print(f"untrained (zero-init head = pure Newton) mean residual: {r0:.1f} Pa")
+
+    model, hist = train(
+        model, samples,
+        epochs=cfg.train.epochs,
+        lr=cfg.train.lr,
+        clip=cfg.train.clip,
+        gamma=cfg.train.loss_gamma,
+        log_every=max(1, cfg.train.epochs // 10),
+        verbose=verbose,
+        monitor=monitor,
+    )
+    return model, hist, dict(untrained_mean_residual=float(r0),
+                             step_scale=cfg.model.step_scale)

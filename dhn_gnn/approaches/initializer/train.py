@@ -62,3 +62,27 @@ def train_initializer(model, samples, epochs=30, lr=1e-3, clip=1.0,
     if verbose:
         print(f"restored best initializer from epoch {best_ep}: |c0-a*|max={best:.4f} kg/s")
     return model, dict(best_c0_err=best, best_epoch=best_ep)
+
+
+def fit(model, samples, cfg, monitor=None, verbose=True):
+    """
+    Uniform entry point for the CLI: config in, (model, history, extra meta) out.
+
+    The recorded `zero_guess_err` is the |a*| a zero initial guess would suffer,
+    i.e. the cold-start error the learned guess has to improve on. Reports quote
+    it as the reference point for the initializer's own guess error.
+    """
+    zero_err = float(np.mean([float(a.abs().max()) for _, a, _ in samples]))
+    if verbose:
+        print(f"zero-guess |c0-a*|max (no initializer): {zero_err:.4f} kg/s")
+
+    model, hist = train_initializer(
+        model, samples,
+        epochs=cfg.train.epochs,
+        lr=cfg.train.lr,
+        clip=cfg.train.clip,
+        log_every=max(1, cfg.train.epochs // 10),
+        verbose=verbose,
+        monitor=monitor,
+    )
+    return model, hist, dict(zero_guess_err=zero_err)

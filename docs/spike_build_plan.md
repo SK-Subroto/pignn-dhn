@@ -12,7 +12,7 @@ is *validated* in double so tolerances are tight.)
 
 ---
 
-## Module 1 — `dhn_gnn/data/physics.py`
+## Module 1 — `dhn_gnn/physics/darcy.py`
 
 A pure-PyTorch, autograd-differentiable port of PyDHN's pipe hydraulics. **Reimplement, do
 not call PyDHN** (PyDHN is NumPy, non-differentiable).
@@ -51,7 +51,7 @@ all three Re regimes (include `Re` near 2320 and 4000 boundaries, and near-zero 
 
 ---
 
-## Module 2 — `dhn_gnn/data/network_operators.py`
+## Module 2 — `dhn_gnn/physics/operators.py`
 
 Build the fixed network operators **once** from the PyDHN `Network` (decision D1: topology
 is constant), cache as sparse tensors.
@@ -77,7 +77,7 @@ is constant), cache as sparse tensors.
 
 ## Integration gates (physics core wired together, on real solved data)
 
-Data: `opendhn-data/network/pipes.csv` (geometry) + a chosen `gen_data/gen_data_steady_v4/`
+Data: `opendhn-data/network/pipes.csv` (geometry) + a chosen `gen_data/solved_steady/`
 (solved `edges-mass_flow.csv`, `edges-delta_p_friction.csv`). Use ~10–20 random timesteps,
 not just one.
 
@@ -123,7 +123,7 @@ the loop-space model (`unrolled_solver.py`), loss (`losses.py`), and dataset cla
 built against it with confidence.
 
 ### ✅ RESULTS — spike PASSED (13/13 checks), all 5 gates green
-Code: `dhn_gnn/data/physics.py`, `dhn_gnn/data/network_operators.py`, `dhn_gnn/config.py`;
+Code: `dhn_gnn/physics/darcy.py`, `dhn_gnn/physics/operators.py`, `dhn_gnn/config.py`;
 runner `tests/run_gates.py` (run with the pydhn venv python, 15 random timesteps).
 Network: N=1352 nodes, E=1514 edges, L=163 cycle rows (**12 internal mesh loops**; the other
 151 rows carry the 150 mass-flow consumers + HS1 — as expected, most cycles are setpoint
@@ -145,7 +145,7 @@ on real solved data to solver tolerance. Cleared to build the model layer.
 - Feature scaling (the `dp_der` log-scale note from D4) — that's a training concern.
 - Thermal coupling (#5), boundary-condition/controller handling (#6), loss units (#7).
 
-**Canonical dataset — DECIDED: `gen_data_steady_v4`.** It is the purpose-built hydraulic
+**Canonical dataset — DECIDED: `solved_steady`.** It is the purpose-built hydraulic
 run: `SimpleStep(with_thermal=False)`, all 150 substations `mass_flow`-controlled, friction
 at a fixed 50 °C. v3 is coupled hydraulic+thermal (`control_type="energy"`, per-edge varying
 temperature) and its flows differ from v4 by ~18% median — it entangles the thermal state

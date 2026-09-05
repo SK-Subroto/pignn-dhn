@@ -1,0 +1,38 @@
+# Learned initializer -- the CURRENT approach.
+# One attention pass predicts the loop-space solution, then n_newton exact Newton
+# steps polish it to precision.
+#
+#   python -m dhn_gnn.cli train --arch initializer --run myrun \
+#       --config configs/initializer.yaml
+#
+# Anything here can still be overridden per run without editing the file:
+#   ... --config configs/initializer.yaml --set model.d_model=128
+#
+# These values ARE the defaults; the file exists so you can see and change every
+# knob in one place. Delete a key to fall back to its default.
+
+arch: initializer
+
+model:
+  # Exact Newton steps applied after the learned guess. This is the accuracy/cost
+  # dial: the measured median is 1.56 steps to reach the 50 Pa tolerance, so 4
+  # leaves headroom for the hard hours. Setting it to 0 makes the model a pure
+  # predictor with no physics polish -- the ablation, not the working config.
+  n_newton: 4
+
+  d_model: 64             # attention width
+  n_heads: 4              # must divide d_model
+  num_attn_layers: 2      # attention blocks before the loop-space head
+
+  # 'full' solves the exact 12x12 loop system and converges quadratically.
+  # 'diagonal' is the cheaper damped approximation used by the original paper.
+  newton_mode: full
+
+train:
+  epochs: 30              # plain regression on a_star; converges fast
+  lr: 0.001
+  clip: 1.0               # gradient-norm clip
+  seed: 0
+  n_train: 200            # subsample this many training timesteps (0 = all)
+  split_every: 5          # every Nth timestep is held out for test
+  device: cpu             # at batch size 1 a GPU does not help; see config.get_device

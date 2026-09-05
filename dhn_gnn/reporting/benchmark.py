@@ -35,10 +35,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
-from dhn_gnn.model.initializer import DHNInitializerSolver
-from dhn_gnn.model.newton import NewtonSolver
-from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
+from dhn_gnn.physics import operators as netops
+from dhn_gnn.approaches.initializer.model import DHNInitializerSolver
+from dhn_gnn.solvers.newton import NewtonSolver
+from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
 
 
 def _steps_to_tol(curve, tol):
@@ -111,7 +111,7 @@ def _standalone_args():
 def main(args=None):
     args = args if args is not None else _standalone_args()
 
-    from dhn_gnn.training import make_samples
+    from dhn_gnn.datasets import make_samples
     ops = netops.build_operators()
     n_ts = len(pd.read_csv(config.MASS_FLOW_CSV, index_col=0))
     _, test_ts = config.split_timesteps(n_ts, args.split_every)
@@ -128,12 +128,13 @@ def main(args=None):
                  bench_initializer(ops, samples, args.tol, "cold")))
     rows.append(("4. warm start + full Newton (PyDHN's trick)",
                  bench_initializer(ops, samples, args.tol, "warm")))
-    if config.CHECKPOINT_INIT.exists():
+    init_ckpt = config.resolve_checkpoint("initializer", getattr(args, "run", "default"))
+    if init_ckpt.exists():
         rows.append(("5. learned initializer + full Newton",
                      bench_initializer(ops, samples, args.tol, "learned",
-                                       ckpt=config.CHECKPOINT_INIT)))
+                                       ckpt=init_ckpt)))
     else:
-        print(f"(skipping variant 5: no checkpoint at {config.CHECKPOINT_INIT})\n")
+        print(f"(skipping variant 5: no checkpoint at {init_ckpt})\n")
 
     hist = json.loads(Path(config.GEN_DATA_DIR / "history.json").read_text())
     pydhn_it = np.array(hist["hydraulics iterations"])

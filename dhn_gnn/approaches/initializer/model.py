@@ -28,9 +28,9 @@ import torch
 import torch.nn as nn
 
 from dhn_gnn import config
-from dhn_gnn.model.attention import EdgeBiasedAttention
-from dhn_gnn.model.base import slog
-from dhn_gnn.model.newton import NewtonSolver
+from dhn_gnn.solvers.attention import EdgeBiasedAttention
+from dhn_gnn.solvers.physics_base import slog
+from dhn_gnn.solvers.newton import NewtonSolver
 
 
 class DHNInitializerSolver(NewtonSolver):

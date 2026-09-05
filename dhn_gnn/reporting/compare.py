@@ -29,10 +29,18 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
-from dhn_gnn.data.pressure import PressureReconstructor
+from dhn_gnn.physics import operators as netops
+from dhn_gnn.physics.pressure import PressureReconstructor
 
+# Must match where evaluate.py wrote its pred-*.csv for this run.
 RES = config.RESULTS_DIR
+
+
+def _use_run_dir(arch, run):
+    global RES
+    RES = config.run_dir(arch, run)
+    RES.mkdir(parents=True, exist_ok=True)
+    return RES
 
 
 def dataset_consistency(ops, dp_true_df, mf_df, n_ts=40):
@@ -45,20 +53,20 @@ def dataset_consistency(ops, dp_true_df, mf_df, n_ts=40):
     offset. Worth stating up front rather than discovering in review.
 
     Known status: the 2022 dataset supplied by the supervisor was generated with
-    settings this project cannot currently reproduce (dhn_gnn.generate predates
+    settings this project cannot currently reproduce (the old dhn_gnn/generate.py predated
     it), and agreement is poor -- consistent with per-pipe temperatures from a
     thermal run, where our fixed 50 degC rho/mu is right for no pipe in particular.
     """
-    from dhn_gnn.data import physics
+    from dhn_gnn.physics import darcy
     pm = ops.pipe_mask.numpy()
     d = ops.diameter.clamp_min(1e-9)
     idx = np.linspace(0, len(mf_df) - 1, n_ts).round().astype(int)
     within, ratios = [], []
     for i in idx:
         m = torch.as_tensor(mf_df.iloc[i].to_numpy(np.float64))
-        Re = physics.reynolds(m, d, config.MU_50)
-        fd = physics.friction_factor(Re, d, ops.roughness)
-        ours = (physics.phi(m, d, ops.length, fd, config.RHO_50) * ops.pipe_mask).numpy()
+        Re = darcy.reynolds(m, d, config.MU_50)
+        fd = darcy.friction_factor(Re, d, ops.roughness)
+        ours = (darcy.phi(m, d, ops.length, fd, config.RHO_50) * ops.pipe_mask).numpy()
         ref = dp_true_df.iloc[i].to_numpy(np.float64)
         sel = pm & (np.abs(ref) > 1e-6)
         r = ours[sel] / ref[sel]
@@ -80,9 +88,17 @@ def _stats(pred, true):
 
 
 def main(args=None):
+    if args is not None:
+        _use_run_dir(getattr(args, "arch", "initializer"),
+                     getattr(args, "run", "default"))
     ops = netops.build_operators()
     pipe = ops.pipe_mask.numpy()
 
+    if not (RES / "pred-mass_flow.csv").exists():
+        raise SystemExit(
+            f"no predictions in {RES}. Run evaluate for this approach first:\n"
+            f"  python -m dhn_gnn.cli evaluate --arch <arch> --run <run>"
+        )
     flow_p = pd.read_csv(RES / "pred-mass_flow.csv", index_col=0)
     dp_p = pd.read_csv(RES / "pred-delta_p.csv", index_col=0)
     pr_p = pd.read_csv(RES / "pred-pressure.csv", index_col=0)

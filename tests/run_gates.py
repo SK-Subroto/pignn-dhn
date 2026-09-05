@@ -17,8 +17,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dhn_gnn import config
-from dhn_gnn.data import physics
-from dhn_gnn.data import network_operators as netops
+from dhn_gnn.physics import darcy
+from dhn_gnn.physics import operators as netops
 
 from pydhn.components.base_components_hydraulics import (
     compute_dp_pipe,
@@ -59,10 +59,10 @@ def gate1_physics_port():
 
     # our port
     t = lambda a: torch.as_tensor(a)
-    Re = physics.reynolds(t(mdot), t(d), MU)
-    fd = physics.friction_factor(Re, t(d), t(rough))
-    dp = physics.phi(t(mdot), t(d), t(L), fd, RHO)
-    dpder = physics.dphi_dmdot(t(mdot), t(d), t(L), fd, RHO)
+    Re = darcy.reynolds(t(mdot), t(d), MU)
+    fd = darcy.friction_factor(Re, t(d), t(rough))
+    dp = darcy.phi(t(mdot), t(d), t(L), fd, RHO)
+    dpder = darcy.dphi_dmdot(t(mdot), t(d), t(L), fd, RHO)
 
     def relerr(a, b):
         a, b = np.asarray(a), b.numpy()
@@ -78,8 +78,8 @@ def gate1_physics_port():
     # with fd held FIXED, so the FD must also hold fd fixed to match (relative check,
     # skip near-zero flow where |dp_der| is tiny and the ratio is ill-conditioned).
     h = 1e-7
-    dp_p = physics.phi(t(mdot + h), t(d), t(L), fd, RHO)
-    dp_m = physics.phi(t(mdot - h), t(d), t(L), fd, RHO)
+    dp_p = darcy.phi(t(mdot + h), t(d), t(L), fd, RHO)
+    dp_m = darcy.phi(t(mdot - h), t(d), t(L), fd, RHO)
     fd_num = (dp_p - dp_m) / (2 * h)
     big = np.abs(mdot) > 1e-2
     fd_rel = float(((fd_num - dpder).abs() / dpder.abs().clamp_min(1e-9))[big].max())
@@ -151,7 +151,7 @@ def gate5_full_compose(ops):
     dpf_true = _load_solved(ops, config.DELTA_P_FRICTION_CSV)
 
     d = ops.diameter.clamp_min(1e-9)                        # avoid /0 on non-pipe cols
-    dp_mine = physics.pipe_dp(mdot, d, ops.length, ops.roughness, RHO, MU)
+    dp_mine = darcy.pipe_dp(mdot, d, ops.length, ops.roughness, RHO, MU)
     dp_mine = dp_mine * ops.pipe_mask                       # friction only defined on pipes
 
     # per-edge match vs oracle friction dp (pipes only)

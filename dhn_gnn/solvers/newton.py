@@ -19,7 +19,7 @@ to solve timesteps strictly in order).
 import torch
 
 from dhn_gnn import config
-from dhn_gnn.model.base import DHNPhysicsBase
+from dhn_gnn.solvers.physics_base import DHNPhysicsBase
 
 
 class NewtonSolver(DHNPhysicsBase):

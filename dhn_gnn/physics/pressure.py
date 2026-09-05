@@ -4,7 +4,7 @@ The unrolled solver is a *flow* solver: its state is edge mass flow and the only
 pressure quantity it ever evaluates is the per-pipe drop. Node pressure is not a
 model output, so it is recovered here by integrating dp over the graph.
 
-Sign convention (verified numerically against data/solved_steady_v4):
+Sign convention (verified numerically against data/solved_steady):
     A[n, e] = -1 if node n is edge e's start node, +1 if it is the end node
     dp_e    = p_start - p_end
   =>  (A^T p)_e = p_end - p_start = -dp_e
@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from dhn_gnn import config
-    from dhn_gnn.data import network_operators as netops
+    from dhn_gnn.physics import operators as netops
 
     ops = netops.build_operators()
     rec = PressureReconstructor(ops)

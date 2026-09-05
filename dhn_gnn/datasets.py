@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
+from dhn_gnn.physics import operators as netops
 
 _OPS = None
 

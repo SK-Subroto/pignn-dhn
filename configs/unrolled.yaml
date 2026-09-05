@@ -1,0 +1,44 @@
+# Unrolled solver -- the ORIGINAL approach, kept for comparison.
+# A GNN proposes a correction on top of a Newton step at every one of K steps.
+#
+#   python -m dhn_gnn.cli train --arch unrolled --run myrun \
+#       --config configs/unrolled.yaml
+#
+# READ THIS BEFORE SWEEPING: every learning rate measured so far scored WORSE
+# than not training at all (the heads are zero-init, so the untrained model is
+# already exact Newton). See the table in dhn_gnn/approaches/unrolled/train.py.
+# A sweep here characterises a negative result; it is not a search for a win.
+#
+# These values ARE the defaults; the file exists so you can see and change every
+# knob in one place. Delete a key to fall back to its default.
+
+arch: unrolled
+
+model:
+  # Unrolled steps. The solver carries ONE nn.Linear head PER step, so a
+  # checkpoint trained at one K cannot be loaded into a model built with another.
+  K: 10
+
+  d_model: 64             # attention width
+  n_heads: 4              # must divide d_model
+  num_attn_layers: 2      # attention blocks per unrolled step
+
+  gamma: 0.9              # stored on the model; the loss discount is train.loss_gamma
+  step_scale: 0.01        # bound on the learned per-step correction, via tanh.
+                          # 0.5 is far too large next to loop flows of 3-5 kg/s
+                          # and diverges at every stable learning rate.
+
+  # 'full' solves the exact 12x12 loop system (quadratic convergence, no damping
+  # needed). 'diagonal' + damping 0.5 reproduces the ORIGINAL paper setup.
+  newton_mode: full
+  newton_damping: 1.0     # auto-set to 0.5 for 'diagonal' unless you set it here
+
+train:
+  epochs: 40
+  lr: 0.001
+  clip: 1.0               # gradient-norm clip
+  seed: 0
+  n_train: 200            # subsample this many training timesteps (0 = all)
+  split_every: 5          # every Nth timestep is held out for test
+  device: cpu             # at batch size 1 a GPU does not help; see config.get_device
+  loss_gamma: 0.9         # deep-supervision discount across the K per-step residuals

@@ -9,6 +9,10 @@ numpy==1.26.4
 pandas==2.3.3
 matplotlib==3.11.0
 
+# Run recipes: every training run reads and writes a config.yaml
+# (dhn_gnn/approaches/base.py). Chosen over JSON so the configs can carry comments.
+pyyaml==6.0.3
+
 # DHN hydraulic simulator: builds the Network object and is the physics/oracle
 # reference for the spike gates. Pulls networkx (2.8.8) as a dependency.
 pydhn==0.1.3

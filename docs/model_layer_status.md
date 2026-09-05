@@ -8,9 +8,9 @@ layer, what works, and the empirical findings from trying to train it.
 
 | File | Role |
 |---|---|
-| `dhn_gnn/model/attention.py` | Edge-biased multi-head self-attention (paper's block, native `scatter_reduce`) |
-| `dhn_gnn/model/unrolled_solver.py` | K-step loop-space unrolled solver (Option B / D3) |
-| `dhn_gnn/model/stability.py` | Velocity cap + Armijo (eval-time stabilizers) |
+| `dhn_gnn/solvers/attention.py` | Edge-biased multi-head self-attention (paper's block, native `scatter_reduce`) |
+| `dhn_gnn/approaches/unrolled/model.py` | K-step loop-space unrolled solver (Option B / D3) |
+| `dhn_gnn/solvers/stability.py` | Velocity cap + Armijo (eval-time stabilizers) |
 | `dhn_gnn/losses.py` | Discounted physics loss (§4) |
 | `dhn_gnn/train.py` | Deep-supervised / physics training loop |
 | `tests/run_model_smoke.py` | 11 invariant checks (all pass) |

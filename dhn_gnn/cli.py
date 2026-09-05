@@ -3,78 +3,144 @@
     python -m dhn_gnn.cli train     --arch initializer      fit a model
     python -m dhn_gnn.cli evaluate  --arch initializer      score it, write CSVs
     python -m dhn_gnn.cli benchmark                         all approaches vs PyDHN
-    python -m dhn_gnn.cli compare                           predictions vs reference
+    python -m dhn_gnn.cli compare   --arch initializer      predictions vs reference
+    python -m dhn_gnn.cli config    --arch unrolled         print the resolved recipe
 
 Three approaches are directly comparable, and every report names them the same way:
 
     newton       pure physics, NO learning        <- the control condition
     unrolled     GNN every step (original)
     initializer  GNN once + Newton polish         <- current
+
+HYPERPARAMETERS
+    Every knob is declared in the approach's own config dataclass
+    (dhn_gnn/approaches/<arch>/hparams.py) and resolved in this order:
+
+        dataclass defaults  ->  --config file.yaml  ->  named flags  ->  --set k=v
+
+    Set anything without touching source:
+
+        ... train --arch initializer --set model.d_model=128 --set lr=1e-4
+        ... train --arch unrolled    --set K=25 --set model.newton_mode=diagonal
+
+    A bare key works when it is unambiguous (--set K=25); qualify it otherwise.
+    An unknown key is an error, never a silent fallback to the default.
+
+RUNS
+    --run NAME puts everything for one experiment in its own directory:
+
+        results/<arch>/<run>/  config.yaml  model.pt  metrics.txt  pred-*.csv
+
+    so two approaches -- or two hyperparameter settings of one approach -- can no
+    longer overwrite each other's scores. The resolved config.yaml is written
+    beside the weights, so a run can always be reproduced from its own output.
 """
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dhn_gnn import config
-from dhn_gnn.training import (load_checkpoint, make_samples, ops_cache,
-                              save_checkpoint, timestep_split)
-from dhn_gnn.training.initializer import train_initializer
-from dhn_gnn.training.unrolled import mean_final_residual, train
+from dhn_gnn import approaches, config
+from dhn_gnn.approaches import hyperparams
+from dhn_gnn.checkpoints import save_checkpoint
+from dhn_gnn.datasets import make_samples, ops_cache, timestep_split
+
+# Named convenience flags and the config path each one drives. They exist because
+# --lr 1e-4 reads better than --set train.lr=1e-4 for the knobs that change on
+# nearly every run; everything else goes through --set.
+_FLAG_TO_KEY = {
+    "epochs": "train.epochs",
+    "lr": "train.lr",
+    "seed": "train.seed",
+    "n_train": "train.n_train",
+    "split_every": "train.split_every",
+    "device": "train.device",
+    # unrolled-only, kept because the docs and generated guides name them
+    "k": "model.K",
+    "step_scale": "model.step_scale",
+    "newton_mode": "model.newton_mode",
+}
+
+
+def _explicitly_set(args, key):
+    """True if --set touched this key, so a coupling rule must not override it."""
+    return any(item.split("=", 1)[0].strip().split(".")[-1] == key
+               for item in (getattr(args, "set", None) or []))
+
+
+def resolve_config(args):
+    """Build the run recipe: defaults -> YAML -> named flags -> --set."""
+    cfg = approaches.get(args.arch).config_cls()
+    if getattr(args, "config", None):
+        cfg = hyperparams.load_yaml(type(cfg), args.config)
+
+    # None means "not passed", which is how an argparse default is kept from
+    # silently overwriting a value the YAML file set on purpose.
+    flags = [f"{key}={getattr(args, flag)}"
+             for flag, key in _FLAG_TO_KEY.items()
+             if getattr(args, flag, None) is not None]
+    try:
+        hyperparams.apply_overrides(cfg, flags)
+        hyperparams.apply_overrides(cfg, getattr(args, "set", None))
+    except ValueError as exc:
+        raise SystemExit(f"config error: {exc}")
+
+    # newton_mode and newton_damping are coupled: the original approach pairs
+    # diagonal Newton with 0.5 damping, while full Newton converges quadratically
+    # and needs none -- carrying 0.5 over to full would halve every step. Skipped
+    # when the damping was set by hand, which is the point of setting it by hand.
+    model = cfg.model
+    if hasattr(model, "newton_damping") and not _explicitly_set(args, "newton_damping"):
+        model.newton_damping = 0.5 if model.newton_mode == "diagonal" else 1.0
+    return cfg
 
 
 def cmd_train(args):
-    torch.manual_seed(args.seed)
-    dev = config.get_device(args.device)
+    approach = approaches.get(args.arch)
+    cfg = resolve_config(args)
+
+    torch.manual_seed(cfg.train.seed)
+    dev = config.get_device(cfg.train.device)
     ops = ops_cache()
-    n_ts, train_ts, test_ts = timestep_split(args.split_every, args.n_train)
+    n_ts, train_ts, test_ts = timestep_split(cfg.train.split_every, cfg.train.n_train)
+
+    print(f"arch: {args.arch} ({approach.summary})   run: {args.run}   device: {dev}")
     print(f"timesteps: {n_ts} total | train {len(train_ts)} (used) | test {len(test_ts)}")
+    print(f"config: {hyperparams.summarize(cfg)}")
 
-    if args.arch == "initializer":
-        from dhn_gnn.model.initializer import DHNInitializerSolver
-        kwargs = dict(config.INIT_MODEL_KWARGS)
-        model = DHNInitializerSolver(ops, **kwargs).float().to(dev)
-        samples = make_samples(ops, train_ts, device=dev)
-        print(f"arch: initializer  n_newton={kwargs['n_newton']}  epochs={args.epochs}  "
-              f"lr={args.lr}  device={dev}")
-        zero_err = float(np.mean([float(a.abs().max()) for _, a, _ in samples]))
-        print(f"zero-guess |c0-a*|max (no initializer): {zero_err:.4f} kg/s")
-        monitor = samples[::max(1, len(samples) // 20)]
-        _, hist = train_initializer(model, samples, epochs=args.epochs, lr=args.lr,
-                                    log_every=max(1, args.epochs // 10), monitor=monitor)
-        out = args.out or config.CHECKPOINT_INIT
-        extra = dict(zero_guess_err=zero_err)
-    else:
-        from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
-        kwargs = dict(config.MODEL_KWARGS, step_scale=args.step_scale)
-        if args.k is not None:
-            kwargs["K"] = args.k
-        if args.newton_mode is not None:
-            kwargs["newton_mode"] = args.newton_mode
-            # the original approach pairs diagonal Newton with 0.5 damping; full
-            # Newton needs none, and carrying 0.5 over would halve every step
-            kwargs["newton_damping"] = 0.5 if args.newton_mode == "diagonal" else 1.0
-        model = DHNUnrolledSolver(ops, **kwargs).float().to(dev)
-        samples = make_samples(ops, train_ts, device=dev)
-        print(f"arch: unrolled  K={kwargs['K']}  step_scale={args.step_scale}  "
-              f"epochs={args.epochs}  lr={args.lr}  device={dev}")
-        r0, _ = mean_final_residual(model, samples)
-        print(f"untrained (zero-init head = pure Newton) mean residual: {r0:.1f} Pa")
-        monitor = samples[::max(1, len(samples) // 20)]
-        _, hist = train(model, samples, epochs=args.epochs, lr=args.lr,
-                        log_every=max(1, args.epochs // 10), monitor=monitor)
-        out = args.out or config.CHECKPOINT
-        extra = dict(untrained_mean_residual=float(r0), step_scale=args.step_scale)
+    model_kwargs = dataclasses.asdict(cfg.model)
+    model = approach.model_cls()(ops, **model_kwargs).float().to(dev)
+    samples = make_samples(ops, train_ts, device=dev)
+    monitor = samples[::max(1, len(samples) // 20)]
 
-    save_checkpoint(model, kwargs, out,
-                    meta=dict(arch=args.arch, split_every=args.split_every,
-                              n_train=len(train_ts), epochs=args.epochs, lr=args.lr,
-                              seed=args.seed, train_ts=train_ts.tolist(),
-                              **extra, **hist))
+    model, hist, extra = approach.fit_fn()(model, samples, cfg, monitor=monitor)
+
+    ckpt = args.out or config.checkpoint_path(args.arch, args.run)
+    save_checkpoint(model, model_kwargs, ckpt,
+                    meta=dict(arch=args.arch, run=args.run,
+                              split_every=cfg.train.split_every,
+                              n_train=len(train_ts), epochs=cfg.train.epochs,
+                              lr=cfg.train.lr, seed=cfg.train.seed,
+                              train_ts=train_ts.tolist(),
+                              config=hyperparams.to_dict(cfg), **extra, **hist))
+    # The recipe is written only after the run survives, so a half-finished
+    # directory never looks like a completed experiment.
+    written = hyperparams.save_yaml(cfg, config.config_path(args.arch, args.run))
+    print(f"saved recipe     -> {written}")
+
+
+def cmd_config(args):
+    """Print the resolved recipe without training. Cheap way to check a sweep."""
+    cfg = resolve_config(args)
+    print(yaml.safe_dump(hyperparams.to_dict(cfg), sort_keys=False, default_flow_style=False),
+          end="")
+    if args.save:
+        print(f"saved -> {hyperparams.save_yaml(cfg, args.save)}")
 
 
 def cmd_evaluate(args):
@@ -97,45 +163,73 @@ def build_parser():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--split-every", type=int, default=5,
-                        help="every Nth timestep is held out for test")
-    common.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu",
-                        help="cpu by default: at batch size 1 this model is too "
-                             "small for a GPU to help (see config.get_device)")
+    # --- shared: which approach, which run -------------------------------------
+    run_opts = argparse.ArgumentParser(add_help=False)
+    run_opts.add_argument("--arch", choices=approaches.ARCH_CHOICES,
+                          default="initializer")
+    run_opts.add_argument("--run", default="default",
+                          help="run name; outputs go to results/<arch>/<run>/ "
+                               "(default: %(default)s)")
 
-    t = sub.add_parser("train", parents=[common], help="fit a model")
-    t.add_argument("--arch", choices=["initializer", "unrolled"], default="initializer")
-    t.add_argument("--epochs", type=int, default=40)
-    t.add_argument("--lr", type=float, default=1e-3)
-    t.add_argument("--n-train", type=int, default=200,
-                   help="subsample this many training timesteps (0 = all)")
-    t.add_argument("--step-scale", type=float, default=0.01,
-                   help="unrolled only: bound on the learned per-step correction")
-    t.add_argument("--k", type=int, default=None,
-                   help="unrolled only: number of unrolled steps (default config.K_UNROLLED)")
-    t.add_argument("--newton-mode", choices=["full", "diagonal"], default=None,
-                   help="unrolled only: 'diagonal' reproduces the ORIGINAL approach")
-    t.add_argument("--seed", type=int, default=0)
+    # --- shared: how the hyperparameters are set -------------------------------
+    hp = argparse.ArgumentParser(add_help=False)
+    hp.add_argument("--config", type=Path, default=None,
+                    help="YAML recipe to start from; --set still applies on top")
+    hp.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
+                    help="override one hyperparameter, repeatable "
+                         "(e.g. --set model.d_model=128 --set lr=1e-4)")
+    # default=None throughout: it is how "not passed" stays distinguishable from
+    # "passed the default", which is what lets a YAML file survive these flags.
+    hp.add_argument("--epochs", type=int, default=None)
+    hp.add_argument("--lr", type=float, default=None)
+    hp.add_argument("--seed", type=int, default=None)
+    hp.add_argument("--n-train", dest="n_train", type=int, default=None,
+                    help="subsample this many training timesteps (0 = all)")
+    hp.add_argument("--split-every", dest="split_every", type=int, default=None,
+                    help="every Nth timestep is held out for test")
+    hp.add_argument("--device", choices=["auto", "cpu", "cuda"], default=None,
+                    help="cpu by default: at batch size 1 this model is too "
+                         "small for a GPU to help (see config.get_device)")
+    hp.add_argument("--k", type=int, default=None,
+                    help="unrolled only: number of unrolled steps")
+    hp.add_argument("--step-scale", dest="step_scale", type=float, default=None,
+                    help="unrolled only: bound on the learned per-step correction")
+    hp.add_argument("--newton-mode", dest="newton_mode",
+                    choices=["full", "diagonal"], default=None,
+                    help="unrolled only: 'diagonal' reproduces the ORIGINAL approach")
+
+    t = sub.add_parser("train", parents=[run_opts, hp], help="fit a model")
     t.add_argument("--out", type=Path, default=None,
-                   help="checkpoint path; point smoke runs elsewhere so a short "
-                        "test cannot overwrite a real trained model")
+                   help="override the checkpoint path; point smoke runs elsewhere "
+                        "so a short test cannot overwrite a real trained model")
     t.set_defaults(func=cmd_train)
 
-    e = sub.add_parser("evaluate", parents=[common], help="score a checkpoint, write CSVs")
-    e.add_argument("--arch", choices=["initializer", "unrolled"], default="initializer")
+    c = sub.add_parser("config", parents=[run_opts, hp],
+                       help="print the resolved recipe without training")
+    c.add_argument("--save", type=Path, default=None, help="also write it here")
+    c.set_defaults(func=cmd_config)
+
+    e = sub.add_parser("evaluate", parents=[run_opts],
+                       help="score a checkpoint, write CSVs")
     e.add_argument("--ckpt", type=Path, default=None)
     e.add_argument("--tol", type=float, default=config.EVAL_TOL_PA)
     e.add_argument("--max-test", type=int, default=0)
+    e.add_argument("--split-every", dest="split_every", type=int, default=5)
+    e.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu")
     e.set_defaults(func=cmd_evaluate)
 
-    b = sub.add_parser("benchmark", parents=[common], help="all approaches vs PyDHN")
+    b = sub.add_parser("benchmark", help="all approaches vs PyDHN")
     b.add_argument("--n-ts", type=int, default=149)
     b.add_argument("--tol", type=float, default=config.EVAL_TOL_PA)
+    b.add_argument("--split-every", dest="split_every", type=int, default=5)
+    b.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu")
+    b.add_argument("--run", default="default",
+                   help="which run of each approach to load (default: %(default)s)")
     b.set_defaults(func=cmd_benchmark)
 
-    c = sub.add_parser("compare", help="predicted CSVs vs the PyDHN reference")
-    c.set_defaults(func=cmd_compare)
+    cp = sub.add_parser("compare", parents=[run_opts],
+                        help="predicted CSVs vs the PyDHN reference")
+    cp.set_defaults(func=cmd_compare)
     return ap
 
 

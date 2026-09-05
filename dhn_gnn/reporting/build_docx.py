@@ -498,8 +498,9 @@ def build():
         "https://idiap.github.io/pydhn/get_started/simulation.html#hydraulic-simulation "
         "(accessed " + f"{date.today():%d %B %Y}" + ").",
         "PyDHN, Idiap Research Institute. https://github.com/idiap/pydhn",
-        "Project repository, branch feat/learned-initializer. Modules: dhn_gnn/model/"
-        "{base,newton,initializer,unrolled_solver}.py, dhn_gnn/reporting/full_report.py.",
+        "Project repository, branch feat/learned-initializer. Modules: dhn_gnn/solvers/"
+        "{physics_base,newton}.py, dhn_gnn/approaches/{unrolled,initializer}/model.py, "
+        "dhn_gnn/reporting/full_report.py.",
     ], 1):
         p = doc.add_paragraph()
         r = p.add_run(f"[{i}]  {ref}")

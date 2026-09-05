@@ -35,12 +35,24 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
-from dhn_gnn.data.pressure import PressureReconstructor
-from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
-from dhn_gnn.training import load_checkpoint
+from dhn_gnn.physics import operators as netops
+from dhn_gnn.physics.pressure import PressureReconstructor
+from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
+from dhn_gnn.checkpoints import load_checkpoint
 
+# Output directory for THIS invocation. Rebound by main() to
+# results/<arch>/<run>/ so scoring one approach can no longer overwrite the
+# CSVs, figure and metrics of another; it stays at results/ only for the
+# module-level default used by direct imports.
 RES = config.RESULTS_DIR
+
+
+def _use_run_dir(arch, run):
+    """Point every output in this module at one approach's run directory."""
+    global RES
+    RES = config.run_dir(arch, run)
+    RES.mkdir(parents=True, exist_ok=True)
+    return RES
 
 
 def run(model, ops, timesteps, rec, p_true_df, tol=None, flow_df=None, device=None):
@@ -270,6 +282,9 @@ def _standalone_args():
     ap.add_argument("--arch", choices=["initializer", "unrolled"], default="initializer",
                     help="'initializer' = one GNN pass + exact Newton (default); "
                          "'unrolled' = the original GNN-every-step model")
+    ap.add_argument("--run", default="default",
+                    help="which run of --arch to score; outputs land in "
+                         "results/<arch>/<run>/")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu")
     ap.add_argument("--ckpt", type=Path, default=None,
                     help="checkpoint to evaluate (default: the one for --arch)")
@@ -282,17 +297,18 @@ def main(args=None):
     dev = config.get_device(args.device)
 
     ops = netops.build_operators()
-    if args.arch == "initializer":
-        from dhn_gnn.model.initializer import DHNInitializerSolver
-        model_cls, ckpt_path = DHNInitializerSolver, config.CHECKPOINT_INIT
-    else:
-        model_cls, ckpt_path = DHNUnrolledSolver, config.CHECKPOINT
-    ckpt_path = args.ckpt or ckpt_path
+    run_name = getattr(args, "run", "default")
+    _use_run_dir(args.arch, run_name)
+
+    from dhn_gnn import approaches
+    model_cls = approaches.get(args.arch).model_cls()
+    ckpt_path = args.ckpt or config.resolve_checkpoint(args.arch, run_name)
     model, ck = load_checkpoint(ops, ckpt_path, model_cls)
     model = model.to(dev)
     meta = ck.get("meta", {})
-    print(f"loaded {ckpt_path}  arch={args.arch}  device={dev}  "
+    print(f"loaded {ckpt_path}  arch={args.arch}  run={run_name}  device={dev}  "
           f"kwargs={ck['model_kwargs']}")
+    print(f"writing results to {RES}")
 
     flow_true = pd.read_csv(config.MASS_FLOW_CSV, index_col=0)[ops.edge_names]
     dp_true = pd.read_csv(config.DELTA_P_CSV, index_col=0)[ops.edge_names]

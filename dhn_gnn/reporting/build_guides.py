@@ -166,19 +166,19 @@ def title_block(doc, accent, name, subtitle, tagline):
 SHARED_FILES = [
     ("config.py", "Paths, fluid constants, model defaults, and the train/test split.",
      "First, on every run."),
-    ("data/network_operators.py",
+    ("physics/operators.py",
      "Builds the network once with PyDHN and extracts the fixed matrices: cycle matrix "
      "B, incidence A, pipe geometry.", "Once at start-up, then cached."),
-    ("data/physics.py",
+    ("physics/darcy.py",
      "The pressure-drop model: Reynolds number, friction factor, phi and its "
      "derivative. Pure functions, no state.", "Inside every solver step."),
-    ("model/base.py",
+    ("solvers/physics_base.py",
      "DHNPhysicsBase. Holds the network matrices and wraps physics.py into edge_flow, "
      "pipe_dp, dp_der, residual and newton_step.", "Inherited by all three solvers."),
-    ("training/data.py",
+    ("datasets.py",
      "make_samples builds (mdot0, a_star, mdot_true) per hour; timestep_split chooses "
      "which hours are train and which are test.", "Before training and evaluation."),
-    ("data/pressure.py",
+    ("physics/pressure.py",
      "Reconstructs node pressure by least-squares integration of dp. Not part of the "
      "solve.", "During reporting only."),
     ("reporting/full_report.py",
@@ -253,24 +253,24 @@ def guide_newton(d, out):
            "loops exist), the incidence matrix A (which pipe touches which junction), and "
            "the pipe geometry. These never change, so they are built once and reused for "
            "every hour.", False, False)],
-         "data/network_operators.py -> build_operators()")
+         "physics/operators.py -> build_operators()")
     step(doc, 2, "Prepare the hour",
          [("Read the mass flows for this hour. Split them into a part fixed by the "
            "boundary conditions (mdot0) and the part that circulates around the loops. "
            "Only the second part is unknown.", False, False)],
-         "training/data.py -> make_samples()")
+         "datasets.py -> make_samples()")
     step(doc, 3, "Start from zero",
          [("The starting guess is c = 0: assume nothing circulates. This is the ", False, False),
           ("cold start", False, True),
           (". It is honest but uninformed, and the residual begins around 3.6e4 Pa.",
            False, False)],
-         "model/newton.py -> NewtonSolver.initial_guess()")
+         "solvers/newton.py -> NewtonSolver.initial_guess()")
     step(doc, 4, "Measure how wrong it is",
          [("Compute the flow implied by the current guess, then the pressure drop in every "
            "pipe, then sum those drops around each loop. If the loops balanced perfectly "
            "the sum would be zero; whatever is left over is the residual, in pascals.",
            False, False)],
-         "model/base.py -> edge_flow(), pipe_dp(), residual()")
+         "solvers/physics_base.py -> edge_flow(), pipe_dp(), residual()")
     step(doc, 5, "Work out the correction",
          [("Build the Jacobian J = B diag(dphi/dm) B-transpose. Because the problem was "
            "reduced to 12 loop unknowns, this matrix is only ", False, False),
@@ -278,22 +278,22 @@ def guide_newton(d, out):
           (" and solving it exactly costs almost nothing. Solving it exactly is what gives "
            "quadratic convergence: the error squares each time, so 100 Pa becomes 1 Pa "
            "becomes 0.0001 Pa.", False, False)],
-         "model/base.py -> newton_step(mode='full')")
+         "solvers/physics_base.py -> newton_step(mode='full')")
     step(doc, 6, "Apply it, and check",
          [("Subtract the correction from the 12 loop flows and recompute the residual. If "
            "it is below the 50 Pa tolerance, stop. Otherwise return to step 4. On this "
            "network this loop runs about four times.", False, False)],
-         "model/newton.py -> NewtonSolver.forward()")
+         "solvers/newton.py -> NewtonSolver.forward()")
     step(doc, 7, "Expand back to every pipe",
          [("The final 12 numbers are turned back into all 1,514 edge flows by "
            "mdot = mdot0 + Z c. Mass conservation is guaranteed by construction here, "
            "because A Z = 0 - it is never learned and cannot be violated.", False, False)],
-         "model/base.py -> edge_flow()")
+         "solvers/physics_base.py -> edge_flow()")
 
     files_section(doc, [
-        ("model/newton.py", "NewtonSolver. The solve loop, the cold start, and the "
+        ("solvers/newton.py", "NewtonSolver. The solve loop, the cold start, and the "
          "stopping rule.", "Every hour."),
-        ("model/base.py", "newton_step(mode='full') builds and solves the 12x12 system.",
+        ("solvers/physics_base.py", "newton_step(mode='full') builds and solves the 12x12 system.",
          "Every solver step."),
     ], 3)
 
@@ -306,9 +306,9 @@ def guide_newton(d, out):
     code(doc, ["python -m dhn_gnn.reporting.full_report --n-ts 400"])
     para(doc, "Or use it from Python on its own:", after=4)
     code(doc, [
-        "from dhn_gnn.data import network_operators as netops",
-        "from dhn_gnn.model.newton import NewtonSolver",
-        "from dhn_gnn.training import make_samples",
+        "from dhn_gnn.physics import operators as netops",
+        "from dhn_gnn.solvers.newton import NewtonSolver",
+        "from dhn_gnn.datasets import make_samples",
         "",
         "ops = netops.build_operators()",
         "model = NewtonSolver(ops, n_newton=8).float().eval()",
@@ -360,39 +360,39 @@ def guide_unrolled(d, out):
     step(doc, 3, "Start from zero",
          [("The loop flows start at c = 0, the same cold start the pure physics solver "
            "uses.", False, False)],
-         "model/unrolled_solver.py -> forward()")
+         "approaches/unrolled/model.py -> forward()")
     step(doc, 4, "Evaluate the physics at the current guess",
          [("Compute pipe pressure drops, their derivatives, and the loop residual - the "
            "same three quantities the pure Newton solver uses.", False, False)],
-         "model/base.py -> pipe_dp(), dp_der(), residual()")
+         "solvers/physics_base.py -> pipe_dp(), dp_der(), residual()")
     step(doc, 5, "Describe the network to the graph network",
          [("Build four numbers per junction: is it a boundary node, how much water is "
            "injected, the summed pressure drop, and the summed flow magnitude. These are "
            "projected into a 64-dimensional embedding.", False, False)],
-         "model/unrolled_solver.py -> node_proj")
+         "approaches/unrolled/model.py -> node_proj")
     step(doc, 6, "Message passing with attention",
          [("Two rounds of attention. Each junction attends to its neighbours along the "
            "pipes, and each pipe adds a bias derived from its current hydraulic resistance, "
            "so the physics steers where the network pays attention. This is the expensive "
            "part, and it happens on ", False, False), ("every one of the twenty steps",
                                                         True, False), (".", False, False)],
-         "model/attention.py -> EdgeBiasedAttention")
+         "solvers/attention.py -> EdgeBiasedAttention")
     step(doc, 7, "Collapse to the 12 loops and propose a correction",
          [("Junction embeddings are read out onto pipes, then summed onto loops. Step k's "
            "own head turns that into one number per loop, bounded by a tanh so it cannot "
            "explode.", False, False)],
-         "model/unrolled_solver.py -> edge_readout, heads[k]")
+         "approaches/unrolled/model.py -> edge_readout, heads[k]")
     step(doc, 8, "Combine with a damped Newton step",
          [("The update is dc = -0.5 x newton_step + 0.01 x tanh(head). The Newton part uses "
            "only the ", False, False), ("diagonal", False, True),
           (" of the Jacobian - it pretends the loops do not affect each other - which is "
            "why it needs the 0.5 damping and converges slowly.", False, False)],
-         "model/base.py -> newton_step(mode='diagonal')")
+         "solvers/physics_base.py -> newton_step(mode='diagonal')")
     step(doc, 9, "Repeat, then expand",
          [("Steps 4 to 8 run twenty times, then the final 12 loop flows expand back to all "
            "1,514 pipe flows. On this network the tolerance is reached after about "
            "sixteen steps.", False, False)],
-         "model/unrolled_solver.py -> forward()")
+         "approaches/unrolled/model.py -> forward()")
 
     doc.add_heading("3  How training works", level=1)
     rich(doc, [("Training uses a ", False, False), ("deep physics loss", True, False),
@@ -412,11 +412,11 @@ def guide_unrolled(d, out):
                 "3 to 5 kg/s. Use lr=1e-5 and step_scale=0.01.", False, False)])
 
     files_section(doc, [
-        ("model/unrolled_solver.py", "DHNUnrolledSolver. The twenty-step loop, the "
+        ("approaches/unrolled/model.py", "DHNUnrolledSolver. The twenty-step loop, the "
          "per-step heads, and the combined update.", "Every hour, twenty times."),
-        ("model/attention.py", "EdgeBiasedAttention. Message passing between junctions, "
+        ("solvers/attention.py", "EdgeBiasedAttention. Message passing between junctions, "
          "biased by pipe resistance.", "Twenty times per hour."),
-        ("training/unrolled.py", "deep_physics_loss and the training loop with "
+        ("approaches/unrolled/train.py", "deep_physics_loss and the training loop with "
          "best-weight restore.", "During training only."),
         ("losses.py", "The earlier discounted physics loss, kept for the smoke test.",
          "Tests only."),
@@ -487,7 +487,7 @@ def guide_initializer(d, out):
            "drops and their derivatives. Build four numbers per junction - boundary flag, "
            "injection, summed pressure drop, summed flow magnitude - and project them into "
            "a 64-dimensional embedding.", False, False)],
-         "model/initializer.py -> initial_guess()")
+         "approaches/initializer/model.py -> initial_guess()")
     step(doc, 4, "Two rounds of attention",
          [("Each junction exchanges information with its neighbours along the pipes. Each "
            "pipe contributes a bias derived from its hydraulic resistance, so the physics "
@@ -495,30 +495,30 @@ def guide_initializer(d, out):
           ("exactly once per hour", True, False),
           (" - the single most important difference from the original architecture.",
            False, False)],
-         "model/attention.py -> EdgeBiasedAttention")
+         "solvers/attention.py -> EdgeBiasedAttention")
     step(doc, 5, "Collapse to 12 numbers",
          [("Junction embeddings are read out onto pipes, then averaged onto loops. "
            "Averaging rather than summing matters: a loop spans hundreds of pipes, and a "
            "plain sum produced features about a hundred times larger than the rest of the "
            "network expects, which made early predictions wildly off-scale.", False, False)],
-         "model/initializer.py -> loop_norm, head")
+         "approaches/initializer/model.py -> loop_norm, head")
     step(doc, 6, "The guess",
          [("The head outputs one number per loop: the predicted circulation. Its output "
            "layer is zero-initialised, so an untrained model predicts zero and degrades "
            "gracefully to the cold start. After training the guess is about 0.06 kg/s from "
            "the truth, roughly a hundred times closer than starting from zero.",
            False, False)],
-         "model/initializer.py -> head")
+         "approaches/initializer/model.py -> head")
     step(doc, 7, "Exact Newton finishes the job",
          [("From here the code is the pure physics solver, inherited unchanged: measure "
            "the residual, build the 12x12 Jacobian, solve it exactly, apply the "
            "correction, stop when below 50 Pa. ", False, False),
           ("No learned parameters are involved beyond this point.", True, False)],
-         "model/newton.py -> NewtonSolver.forward()")
+         "solvers/newton.py -> NewtonSolver.forward()")
     step(doc, 8, "Expand back to every pipe",
          [("The final 12 loop flows become all 1,514 edge flows. Mass conservation holds "
            "by construction.", False, False)],
-         "model/base.py -> edge_flow()")
+         "solvers/physics_base.py -> edge_flow()")
 
     doc.add_heading("3  How training works, and why it is easy", level=1)
     rich(doc, [("The correct answer for the 12 loop flows can be computed directly from the "
@@ -538,16 +538,16 @@ def guide_initializer(d, out):
                 False, False)])
 
     files_section(doc, [
-        ("model/initializer.py", "DHNInitializerSolver. The attention stack and the head "
+        ("approaches/initializer/model.py", "DHNInitializerSolver. The attention stack and the head "
          "that predicts the 12 loop flows. Everything else is inherited.",
          "Once per hour."),
-        ("model/newton.py", "The parent class. Supplies the Newton polish, unchanged.",
+        ("solvers/newton.py", "The parent class. Supplies the Newton polish, unchanged.",
          "After the guess."),
-        ("model/attention.py", "EdgeBiasedAttention. Message passing between junctions.",
+        ("solvers/attention.py", "EdgeBiasedAttention. Message passing between junctions.",
          "Once per hour."),
-        ("training/initializer.py", "train_initializer. Regression on a_star with "
+        ("approaches/initializer/train.py", "train_initializer. Regression on a_star with "
          "best-weight restore.", "During training only."),
-        ("training/checkpoint.py", "Saves weights together with the hyperparameters "
+        ("checkpoints.py", "Saves weights together with the hyperparameters "
          "needed to rebuild the model.", "End of training, start of evaluation."),
     ], 4)
 

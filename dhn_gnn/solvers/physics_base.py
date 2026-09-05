@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 from dhn_gnn import config
-from dhn_gnn.data import physics
+from dhn_gnn.physics import darcy
 
 
 def slog(x):
@@ -69,15 +69,15 @@ class DHNPhysicsBase(nn.Module):
 
     def pipe_dp(self, mdot):
         d = self.diameter.clamp_min(1e-9)
-        return physics.pipe_dp(mdot, d, self.length, self.roughness,
+        return darcy.pipe_dp(mdot, d, self.length, self.roughness,
                                self.rho, self.mu, re_floor=1e-6) * self.pipe_mask
 
     def dp_der(self, mdot):
         """dphi/dmdot -- the local hydraulic resistance, i.e. the Jacobian entries."""
         d = self.diameter.clamp_min(1e-9)
-        Re = physics.reynolds(mdot, d, self.mu)
-        fd = physics.friction_factor(Re, d, self.roughness, re_floor=1e-6)
-        return physics.dphi_dmdot(mdot, d, self.length, fd, self.rho) * self.pipe_mask
+        Re = darcy.reynolds(mdot, d, self.mu)
+        fd = darcy.friction_factor(Re, d, self.roughness, re_floor=1e-6)
+        return darcy.dphi_dmdot(mdot, d, self.length, fd, self.rho) * self.pipe_mask
 
     def residual(self, mdot):
         """Loop-law violation in Pa: zero exactly when the flow is the solution."""

@@ -310,7 +310,7 @@ recommendation; now a locked decision.
 
 **D4 — Near-zero-flow / friction-regime: NOT a blocker (empirically verified).**
 Open question #4 asked whether `∂φ/∂ṁ` collapses (singular Jacobian) at low flow. Checked
-directly against generated data (`gen_data_steady_v4/edges-mass_flow.csv`, 745 timesteps ×
+directly against generated data (`solved_steady/edges-mass_flow.csv`, 745 timesteps ×
 1362 pipes = 1,014,690 entries; Reynolds via `Re = 4|ṁ|/(π·d·μ)` with pipe diameters from
 `opendhn-data/network/pipes.csv`; `dp_der` via PyDHN's own `compute_friction_factor` +
 `compute_dp_pipe`). **Props are the exact v4 isothermal constants** — `Water()` at 50 °C,
