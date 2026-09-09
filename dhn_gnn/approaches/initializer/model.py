@@ -38,8 +38,26 @@ class DHNInitializerSolver(NewtonSolver):
 
     def __init__(self, ops, n_newton: int = 4, d_model: int = 64, n_heads: int = 4,
                  num_attn_layers: int = 2, newton_mode: str = "full",
+                 node_scope: str = "all", cycle_hops: int = 1,
                  rho: float = config.RHO_50, mu: float = config.MU_50):
         super().__init__(ops, n_newton=n_newton, newton_mode=newton_mode, rho=rho, mu=mu)
+
+        if node_scope not in ("all", "cycle"):
+            raise ValueError(f"node_scope must be 'all' or 'cycle', got {node_scope!r}")
+        self.node_scope, self.cycle_hops = node_scope, int(cycle_hops)
+
+        # 'cycle' restricts attention to the cycle subgraph grown by cycle_hops.
+        # The mask is a BUFFER, not recomputed per forward: topology is constant
+        # across the dataset, and it must travel with .to(device) like every other
+        # derived operator. 'all' stores an all-true mask so the forward path has
+        # a single branch and the two modes stay measurably comparable.
+        node_mask, edge_sel = (self.cycle_scope(self.cycle_hops)
+                               if node_scope == "cycle"
+                               else (self.is_boundary.new_ones(self.A.shape[0]).bool(),
+                                     self.edge_index.new_ones(self.edge_index.shape[1]).bool()))
+        self.register_buffer("node_mask", node_mask)
+        self.register_buffer("attn_edge_index", self.edge_index[:, edge_sel])
+        self.register_buffer("attn_edge_sel", edge_sel)
 
         self.node_proj = nn.Linear(4, d_model)
         self.blocks = nn.ModuleList([
@@ -68,9 +86,14 @@ class DHNInitializerSolver(NewtonSolver):
         x = self.node_proj(node_feat)
 
         edge_bias = slog(der).unsqueeze(-1)
-        edge_bias_dir = torch.cat([edge_bias, edge_bias], 0)
+        edge_bias_dir = torch.cat([edge_bias, edge_bias], 0)[self.attn_edge_sel]
         for blk in self.blocks:
-            x = blk(x, self.edge_index, edge_bias_dir)
+            x = blk(x, self.attn_edge_index, edge_bias_dir)
+            # Nodes outside the scope receive no messages, so their embedding is
+            # just node_proj's output carried forward. Zeroing them keeps that
+            # stale value from leaking into edge_readout for edges that straddle
+            # the boundary of the scope.
+            x = x * self.node_mask.unsqueeze(-1)
 
         E = dp.numel()
         s, d_ = self.edge_index[0, :E], self.edge_index[1, :E]

@@ -19,6 +19,17 @@ class InitializerModelConfig:
     num_attn_layers: int = 2
     newton_mode: str = "full"
 
+    # Which nodes the d_model embedding and attention actually run over.
+    #   'all'   every node (1352 here)
+    #   'cycle' only nodes within cycle_hops of an internal loop
+    # The unknown lives in cycle space, and edges outside a loop are multiplied by
+    # zero when edges are aggregated into loops -- so on this network 'cycle' with
+    # hops=0 keeps 306 of 1352 nodes and discards nothing the head reads directly.
+    # Extra hops buy back the demand/injection context that the radial branches
+    # feed into the loops; hops=1 is the compromise, 'all' is the old behaviour.
+    node_scope: str = "all"
+    cycle_hops: int = 1
+
 
 @dataclass
 class InitializerTrainConfig(TrainConfig):

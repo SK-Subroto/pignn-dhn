@@ -28,8 +28,15 @@ model:
                           # 0.5 is far too large next to loop flows of 3-5 kg/s
                           # and diverges at every stable learning rate.
 
-  # 'full' solves the exact 12x12 loop system (quadratic convergence, no damping
-  # needed). 'diagonal' + damping 0.5 reproduces the ORIGINAL paper setup.
+  # WHICH JACOBIAN the Newton base step uses, per unrolled step:
+  #   full      the exact loop Jacobian J = B_int . diag(dphi/dm) . B_int^T.
+  #             Only 12x12 here, symmetric PSD, solved directly. Converges
+  #             quadratically and needs no damping.
+  #   diagonal  keeps only diag(J), i.e. pretends the loops do not interact.
+  #             The direction is only roughly right, so it converges linearly and
+  #             needs damping -- this is the ORIGINAL paper setup, kept so the
+  #             old behaviour stays measurable.
+  # Implemented in dhn_gnn/solvers/physics_base.py -> newton_step().
   newton_mode: full
   newton_damping: 1.0     # auto-set to 0.5 for 'diagonal' unless you set it here
 

@@ -83,6 +83,10 @@ dhn_gnn/
       hparams.py            InitializerConfig
       model.py              DHNInitializerSolver
       train.py              regression on a_star + fit()
+    predictor/              GNN once, NO Newton (the ablation)
+      hparams.py            PredictorConfig
+      model.py              DHNPredictorSolver
+      train.py              physics-residual training + fit()
 
   reporting/                evaluate, compare (per-run) + benchmark, full_report (cross-approach)
 configs/                    editable YAML recipes, one per approach
@@ -118,8 +122,9 @@ python tests/run_gates.py
 python tests/run_model_smoke.py
 
 # 3. train an approach -> results/<arch>/<run>/
-python -m dhn_gnn.cli train --arch initializer --run default
-python -m dhn_gnn.cli train --arch unrolled    --run default
+python -m dhn_gnn.cli train --arch initializer --run default   # GNN + Newton polish
+python -m dhn_gnn.cli train --arch unrolled    --run default   # GNN every step
+python -m dhn_gnn.cli train --arch predictor   --run default   # GNN only, no Newton
 
 # 4. score it -> results/<arch>/<run>/{metrics.txt, pred-*.csv, model_eval.png}
 python -m dhn_gnn.cli evaluate --arch initializer --run default

@@ -279,9 +279,12 @@ def _standalone_args():
     ap.add_argument("--split-every", type=int, default=5)
     ap.add_argument("--max-test", type=int, default=0,
                     help="cap the number of test timesteps (0 = all)")
-    ap.add_argument("--arch", choices=["initializer", "unrolled"], default="initializer",
-                    help="'initializer' = one GNN pass + exact Newton (default); "
-                         "'unrolled' = the original GNN-every-step model")
+    # Taken from the registry, so a new approach is scoreable the moment it is
+    # registered -- a hardcoded list here silently excludes it from evaluation.
+    from dhn_gnn import approaches
+    ap.add_argument("--arch", choices=approaches.ARCH_CHOICES, default="initializer",
+                    help="; ".join(f"'{n}' = {a.summary}"
+                                   for n, a in approaches.APPROACHES.items()))
     ap.add_argument("--run", default="default",
                     help="which run of --arch to score; outputs land in "
                          "results/<arch>/<run>/")

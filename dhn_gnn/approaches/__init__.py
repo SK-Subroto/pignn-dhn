@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from importlib import import_module
 
 from dhn_gnn.approaches.initializer.hparams import InitializerConfig
+from dhn_gnn.approaches.predictor.hparams import PredictorConfig
 from dhn_gnn.approaches.unrolled.hparams import UnrolledConfig
 
 
@@ -51,6 +52,13 @@ APPROACHES = {
         _model_ref="dhn_gnn.approaches.initializer.model:DHNInitializerSolver",
         _fit_ref="dhn_gnn.approaches.initializer.train:fit",
     ),
+    "predictor": Approach(
+        name="predictor",
+        config_cls=PredictorConfig,
+        summary="GNN once, NO Newton (ablation)",
+        _model_ref="dhn_gnn.approaches.predictor.model:DHNPredictorSolver",
+        _fit_ref="dhn_gnn.approaches.predictor.train:fit",
+    ),
     "unrolled": Approach(
         name="unrolled",
         config_cls=UnrolledConfig,
@@ -70,4 +78,4 @@ def get(name: str) -> Approach:
 
 
 __all__ = ["Approach", "APPROACHES", "ARCH_CHOICES", "get",
-           "InitializerConfig", "UnrolledConfig"]
+           "InitializerConfig", "PredictorConfig", "UnrolledConfig"]

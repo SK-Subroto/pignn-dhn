@@ -6,12 +6,14 @@ Outputs, all under results/:
     figures/*.png                                             charts
     report_data.json                                          every number in the writeup
 
-The four things compared:
+The things compared:
 
     pydhn        the reference simulator (its own solved CSVs)
     newton       pure physics, cold start, NO learning
     unrolled     GNN every step (the original approach)
     initializer  GNN once, then Newton (the current approach)
+    predictor    GNN once, NO Newton (the ablation) -- scored only when a
+                 checkpoint for it exists, since it is optional
 
 Everything is scored on the SAME held-out timesteps, with the SAME tolerance, on
 the SAME machine, so the only differences are the ones being studied.
@@ -36,6 +38,7 @@ from dhn_gnn.physics import operators as netops
 from dhn_gnn.physics import darcy
 from dhn_gnn.physics.pressure import PressureReconstructor
 from dhn_gnn.approaches.initializer.model import DHNInitializerSolver
+from dhn_gnn.approaches.predictor.model import DHNPredictorSolver
 from dhn_gnn.solvers.newton import NewtonSolver
 from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
 from dhn_gnn.datasets import make_samples
@@ -56,12 +59,14 @@ PALETTE = {
     "newton": "#0f766e",
     "unrolled": "#b45309",
     "initializer": "#1d4ed8",
+    "predictor": "#7c3aed",
 }
 LABEL = {
     "pydhn": "PyDHN (reference)",
     "newton": "Newton (pure physics)",
     "unrolled": "Unrolled GNN (original)",
     "initializer": "Learned initializer (ours)",
+    "predictor": "Pure predictor (no Newton)",
 }
 
 
@@ -322,6 +327,9 @@ def main(args=None):
                     help="which results/initializer/<run>/ to score")
     ap.add_argument("--run-unrolled", dest="run_unrolled", default="2022",
                     help="which results/unrolled/<run>/ to score")
+    ap.add_argument("--run-predictor", dest="run_predictor", default="default",
+                    help="which results/predictor/<run>/ to score; the ablation "
+                         "is skipped when it does not exist")
     a = args if args is not None else ap.parse_args()
 
     FIG.mkdir(parents=True, exist_ok=True); PRED.mkdir(parents=True, exist_ok=True)
@@ -356,8 +364,20 @@ def main(args=None):
     print(f"initializer <- {ip}")
     print(f"unrolled    <- {up}")
 
+    # Optional: the ablation is only scored when a checkpoint for it exists, so
+    # the report still builds for anyone who has not trained one.
+    order = ["unrolled", "newton", "initializer"]
+    pp = config.resolve_checkpoint("predictor", a.run_predictor)
+    if pp.exists():
+        mp, ck_p = load_checkpoint(ops, pp, DHNPredictorSolver)
+        models["predictor"] = (mp, True)
+        order.append("predictor")
+        print(f"predictor   <- {pp}")
+    else:
+        print(f"predictor   <- (none at {pp}; skipping the no-Newton ablation)")
+
     runs, scores = {}, {}
-    for k in ("unrolled", "newton", "initializer"):
+    for k in order:
         m, rec_start = models[k]
         print(f"  running {k} ...", flush=True)
         runs[k] = run_approach(k, m, ops, samples, ts, rec, p_t, a.tol, rec_start)
@@ -400,8 +420,12 @@ def main(args=None):
                                   history_entries=len(hist["hydraulics iterations"]),
                                   history_stale=len(hist["hydraulics iterations"]) != len(flow_t)),
         consistency=cons,
-        checkpoints=dict(initializer=str(config.RESULTS_DIR / "model_init_gpu.pt"),
-                         unrolled=str(up)),
+        # The paths actually loaded above, not a restatement of them: this field is
+        # the report's record of WHICH weights produced its numbers, so a hardcoded
+        # value here names a file the run never opened.
+        checkpoints=dict(initializer=str(ip),
+                         unrolled=str(up),
+                         predictor=str(pp) if pp.exists() else None),
     )
     (RES / "report_data.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"\nsaved {RES/'report_data.json'}  and {len(list(FIG.glob('*.png')))} figures")

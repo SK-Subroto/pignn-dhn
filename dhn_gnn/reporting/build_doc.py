@@ -20,18 +20,22 @@ RES = config.RESULTS_DIR
 FIG = RES / "figures"
 OUT = RES / "report" / "solver-comparison.html"
 
-ORDER = ["pydhn", "unrolled", "newton", "initializer"]
+# "predictor" is optional -- full_report only scores it when a checkpoint exists,
+# so every consumer filters ORDER against the scores actually present.
+ORDER = ["pydhn", "unrolled", "newton", "initializer", "predictor"]
 NAME = {
     "pydhn": "PyDHN",
     "unrolled": "Unrolled GNN",
     "newton": "Newton",
     "initializer": "Learned initializer",
+    "predictor": "Pure predictor",
 }
 SUB = {
     "pydhn": "reference simulator",
     "unrolled": "original approach",
     "newton": "pure physics, no learning",
     "initializer": "this work",
+    "predictor": "no Newton at all (ablation)",
 }
 
 
@@ -55,6 +59,9 @@ def build():
     n = d["n_timesteps"]
     speedup = py["ms_per_ts"] / s["initializer"]["ms_per_ts"]
     vs_unrolled = s["unrolled"]["ms_per_ts"] / s["initializer"]["ms_per_ts"]
+    # Only what full_report actually scored: "predictor" is an optional ablation,
+    # so a fixed tuple would KeyError whenever it has not been trained.
+    approaches = [k for k in ORDER if k != "pydhn" and k in s]
 
     def row(k, cells):
         sw = f'<span class="sw" style="background:var(--{k})"></span>'
@@ -65,14 +72,14 @@ def build():
         fmt(s[k]["flow_mae"], ".2e"), fmt(s[k]["flow_rmse"], ".2e"),
         fmt(s[k]["flow_r2"], ".6f"), fmt(s[k]["dir_acc"], ".2f") + " %",
         fmt(s[k]["dp_mae"], ".2f"), fmt(s[k]["press_mae"], ".0f"),
-    ]) for k in ("unrolled", "newton", "initializer"))
+    ]) for k in approaches)
 
     cost = "\n".join(row(k, [
         fmt(s[k]["steps_mean"], ".2f"), fmt(s[k]["steps_median"], ".0f"),
         fmt(s[k]["steps_max"], ".0f"), fmt(s[k]["ms_per_ts"], ".0f") + " ms",
         fmt(s[k]["pct_under_tol"], ".1f") + " %",
         "<span class='yes'>yes</span>",
-    ]) for k in ("unrolled", "newton", "initializer"))
+    ]) for k in approaches)
     cost += ("\n" + row("pydhn", ["&mdash;", "&mdash;", "&mdash;",
                                   f"~{py['ms_per_ts']:,.0f} ms", "100 %",
                                   "<span class='no'>no</span>"]))
@@ -140,6 +147,7 @@ TEMPLATE = r"""<title>DHN Solver Comparison</title>
   --paper:#fcfdfd; --ink:#0e1a1d; --muted:#59686c; --rule:#dbe4e5; --panel:#f2f6f6;
   --figure-bg:#ffffff;
   --pydhn:#5f6b6d; --unrolled:#b45309; --newton:#0f766e; --initializer:#1d4ed8;
+  --predictor:#7c3aed;
   --warn:#b3261e; --warn-bg:#fdf3f2; --ok:#0f766e;
   --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -150,6 +158,7 @@ TEMPLATE = r"""<title>DHN Solver Comparison</title>
     --paper:#0b1113; --ink:#e4edee; --muted:#93a4a8; --rule:#1d2a2d; --panel:#111a1d;
     --figure-bg:#e9eeef;
     --pydhn:#98a4a6; --unrolled:#e39445; --newton:#31c9b6; --initializer:#6ea8fa;
+  --predictor:#a78bfa;
     --warn:#f08b82; --warn-bg:#1f1413; --ok:#31c9b6;
   }}
 }}
@@ -157,6 +166,7 @@ TEMPLATE = r"""<title>DHN Solver Comparison</title>
   --paper:#0b1113; --ink:#e4edee; --muted:#93a4a8; --rule:#1d2a2d; --panel:#111a1d;
   --figure-bg:#e9eeef;
   --pydhn:#98a4a6; --unrolled:#e39445; --newton:#31c9b6; --initializer:#6ea8fa;
+  --predictor:#a78bfa;
   --warn:#f08b82; --warn-bg:#1f1413; --ok:#31c9b6;
 }}
 

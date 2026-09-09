@@ -63,6 +63,34 @@ class DHNPhysicsBase(nn.Module):
         edge_index = torch.stack([src, dst])
         self.register_buffer("edge_index", torch.cat([edge_index, edge_index.flip(0)], 1))
 
+    # --- cycle scope ---------------------------------------------------------
+    def cycle_scope(self, hops: int = 0):
+        """
+        Which nodes/directed edges are worth attending over, given the unknown.
+
+        The state being solved for lives in cycle space, and `absZ` is nonzero ONLY
+        on edges that belong to an internal loop -- so any embedding built on a
+        non-cycle edge is multiplied by zero when edges are aggregated into loops.
+        On this network that is most of the graph: 306 of 1352 nodes and 316 of
+        1514 edges actually touch a cycle.
+
+        Message passing over the rest is therefore not useless, but it is indirect:
+        it carries demand/injection context from the radial branches INTO the loop
+        nodes. `hops` is exactly that trade -- 0 keeps the strict cycle subgraph,
+        each extra hop pulls in one more ring of feeding branches.
+
+        Returns (node_mask (N,) bool, dir_edge_mask (2E,) bool), the second
+        selecting directed edges with BOTH endpoints inside the node mask.
+        """
+        A_abs = self.A.abs()
+        node_mask = A_abs[:, self.absZ.sum(1) > 0].sum(1) > 0     # on a cycle
+        for _ in range(max(0, int(hops))):
+            touched = A_abs[node_mask].sum(0) > 0                 # edges reaching it
+            node_mask = node_mask | (A_abs[:, touched].sum(1) > 0)
+
+        src, dst = self.edge_index[0], self.edge_index[1]
+        return node_mask, node_mask[src] & node_mask[dst]
+
     # --- flow / pressure -----------------------------------------------------
     def edge_flow(self, mdot0, c):
         return mdot0 + (self.Z @ c)

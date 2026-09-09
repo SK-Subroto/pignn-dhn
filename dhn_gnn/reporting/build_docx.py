@@ -33,7 +33,8 @@ ACCENT = RGBColor(0x0F, 0x4C, 0x5C)
 MUTED = RGBColor(0x55, 0x60, 0x63)
 
 NAME = {"pydhn": "PyDHN (reference)", "unrolled": "Unrolled GNN (original)",
-        "newton": "Newton (pure physics)", "initializer": "Learned initializer (this work)"}
+        "newton": "Newton (pure physics)", "initializer": "Learned initializer (this work)",
+        "predictor": "Pure predictor (no Newton, ablation)"}
 
 
 # ----------------------------------------------------------------- docx helpers
@@ -329,13 +330,17 @@ def build():
     # --- 5 results ---------------------------------------------------------
     doc.add_heading("5  Results", level=1)
 
+    # Only the approaches full_report actually scored, in a stable order.
+    approaches = [k for k in ("unrolled", "newton", "initializer", "predictor")
+                  if k in s]
+
     doc.add_heading("5.1  Accuracy", level=2)
     table(doc,
           ["Approach", "Flow MAE (kg/s)", "RMSE (kg/s)", "R2", "Direction", "dp MAE (Pa)"],
           [[NAME[k], f(s[k]["flow_mae"], ".3e"), f(s[k]["flow_rmse"], ".3e"),
             f(s[k]["flow_r2"], ".6f"), f(s[k]["dir_acc"], ".2f") + " %",
             f(s[k]["dp_mae"], ".2f")]
-           for k in ("unrolled", "newton", "initializer")],
+           for k in approaches],
           3, f"Accuracy against the PyDHN solution on {n} held-out timesteps. Pressure-drop "
              "figures are scored on pipes only and carry the physics offset described in "
              "Section 7.1.")
@@ -347,7 +352,7 @@ def build():
     rows = [[NAME[k], f(s[k]["steps_mean"]), f(s[k]["steps_median"], ".0f"),
              f(s[k]["steps_max"], ".0f"), f(s[k]["ms_per_ts"], ".0f"),
              f(s[k]["pct_under_tol"], ".1f") + " %"]
-            for k in ("unrolled", "newton", "initializer")]
+            for k in approaches]
     rows.append([NAME["pydhn"], "n/a", "n/a", "n/a", f"~{py['ms_per_ts']:,.0f}", "100 %"])
     table(doc, ["Approach", "Steps (mean)", "Median", "Max", "ms / timestep", "Within tol"],
           rows, 4,

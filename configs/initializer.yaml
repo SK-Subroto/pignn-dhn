@@ -28,6 +28,18 @@ model:
   # 'diagonal' is the cheaper damped approximation used by the original paper.
   newton_mode: full
 
+  # Which nodes the d_model embedding and attention actually run over.
+  #   all    every node (1352 on this network)
+  #   cycle  only nodes within cycle_hops of an internal loop
+  # The unknown lives in cycle space, and only 306 of 1352 nodes touch a loop --
+  # edges outside one are multiplied by zero when edges are aggregated into loops.
+  # hops=0 keeps the strict cycle subgraph (306 nodes, 632 directed attention
+  # edges); each extra hop pulls in one more ring of the radial branches that feed
+  # the loops, restoring demand/injection context. hops=1 -> 412 nodes,
+  # hops=3 -> 588. 'all' is the original behaviour.
+  node_scope: all
+  cycle_hops: 1
+
 train:
   epochs: 30              # plain regression on a_star; converges fast
   lr: 0.001

@@ -39,6 +39,7 @@ RUNS
 import argparse
 import dataclasses
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -118,7 +119,9 @@ def cmd_train(args):
     samples = make_samples(ops, train_ts, device=dev)
     monitor = samples[::max(1, len(samples) // 20)]
 
+    _t_fit = time.time()
     model, hist, extra = approach.fit_fn()(model, samples, cfg, monitor=monitor)
+    train_seconds = time.time() - _t_fit
 
     ckpt = args.out or config.checkpoint_path(args.arch, args.run)
     save_checkpoint(model, model_kwargs, ckpt,
@@ -127,6 +130,8 @@ def cmd_train(args):
                               n_train=len(train_ts), epochs=cfg.train.epochs,
                               lr=cfg.train.lr, seed=cfg.train.seed,
                               train_ts=train_ts.tolist(),
+                              train_seconds=float(train_seconds),
+                              n_params=int(sum(p.numel() for p in model.parameters())),
                               config=hyperparams.to_dict(cfg), **extra, **hist))
     # The recipe is written only after the run survives, so a half-finished
     # directory never looks like a completed experiment.
