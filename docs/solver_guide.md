@@ -4,7 +4,7 @@ A complete walkthrough of the unrolled hydraulic solver: the physics it encodes,
 shapes that flow through it, how training works, how it compares to PyDHN, and where
 it currently falls short.
 
-All figures in this document are verified against `data/solved_steady_v4/`.
+All figures in this document are verified against `data/solved_steady/`.
 The worked example uses timestep 100.
 
 **Contents**
@@ -48,7 +48,7 @@ Pressure drop through a pipe follows a quadratic law, `Δp ∝ |ṁ|·ṁ`, whic
 the system nonlinear and forces an iterative solution.
 
 **PyDHN** is the established Python library that solves this with Newton–Raphson. It
-produced every reference file in `data/solved_steady_v4/`, and is treated here as ground
+produced every reference file in `data/solved_steady/`, and is treated here as ground
 truth. The goal of this project is a *differentiable* solver that reaches the same answer.
 
 ---
@@ -258,7 +258,7 @@ infer it. This is recomputed *every step*, because resistance changes as flow ch
 
 ## 6. A worked example — timestep 100
 
-Real values from `data/solved_steady_v4/`, hour 100 of the January 2022 simulation.
+Real values from `data/solved_steady/`, hour 100 of the January 2022 simulation.
 
 ### What is given (the boundary conditions)
 
@@ -423,7 +423,7 @@ python -m dhn_gnn.evaluate
 ### Regenerating the dataset (PyDHN, not the model)
 
 ```bash
-python -m dhn_gnn.generate --steps 24
+python -m datagen.run  # then: python -m datagen.export
 ```
 
 Weather → per-building demand profiles → mass-flow schedules → PyDHN simulation →
@@ -511,12 +511,12 @@ c_hist          # K × (12,)   per-step loop corrections, diagnostic
 |---|---|---|
 | `results/metrics.txt` | `evaluate.py` | R², MAE, RMSE, direction accuracy, residual stats |
 | `results/model_eval.png` | `evaluate.py` | six-panel diagnostic figure |
-| `data/solved_<ver>/` | `generate.py` | five CSVs — **from PyDHN, not the model** |
+| `data/solved_<ver>/` | `datagen` | five CSVs — **from PyDHN, not the model** |
 
 The model itself writes nothing. It produces no CSV, no checkpoint, no saved state.
 
 > **The gap versus the reference dataset.**
-> `data/solved_steady_v4/` contains five files. The model can currently produce **one**
+> `data/solved_steady/` contains five files. The model can currently produce **one**
 > of them — mass flow. `edges-delta_p` needs the hydrostatic term (excluded by design,
 > `physics.py:116-117`) and Δp on the 152 non-pipe edges (masked to zero).
 > `nodes-pressure` does not exist in any form: there is no pressure state anywhere in

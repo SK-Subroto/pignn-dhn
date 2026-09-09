@@ -23,10 +23,10 @@ Newton–Raphson labels enter the gradient (same philosophy as the paper's PINN 
 
 | AC-PF (paper) | DHN (here) | Code |
 |---|---|---|
-| state `[V, θ]` per node | loop mass flows `m̃` (dim = E−N+1) | `model/unrolled_solver.py` |
-| residual `[ΔP; ΔQ]` | loop residual `B·φ(Bᵀ·m̃)` | `data/physics.py`, `data/network_operators.py` |
-| admittance `Y` | Darcy–Weisbach resistance `φ` | `data/physics.py` |
-| edge admittance bias `β_ij` | linearized resistance `∂φ/∂ṁ` (recomputed per step) | `model/attention.py` |
+| state `[V, θ]` per node | loop mass flows `m̃` (dim = E−N+1) | `approaches/unrolled/model.py` |
+| residual `[ΔP; ΔQ]` | loop residual `B·φ(Bᵀ·m̃)` | `physics/darcy.py`, `physics/operators.py` |
+| admittance `Y` | Darcy–Weisbach resistance `φ` | `physics/darcy.py` |
+| edge admittance bias `β_ij` | linearized resistance `∂φ/∂ṁ` (recomputed per step) | `solvers/attention.py` |
 
 Full derivation and design decisions: [`docs/architecture_mapping.md`](docs/architecture_mapping.md).
 
@@ -44,28 +44,65 @@ per-step physics-residual loss**.
 
 ## Repository layout
 
+One rule explains the whole tree:
+
+> **Shared by every approach → top level. Specific to one approach → inside its
+> folder under `approaches/`.**
+
+Every name is used once and says what it is: `physics/` holds equations, the root
+`data/` holds numbers; `solvers/` is shared machinery, `approaches/*/model.py` is
+one network; `config.py` is project settings, `approaches/*/hparams.py` is knobs.
+
 ```
 dhn_gnn/
-  config.py                 constants (50 °C fluid props) + data paths
-  generate.py               synthetic dataset generator (ports the v4 notebook)
-  evaluate.py               accuracy metrics + figure generation
-  train.py                  deep-supervised / physics training loop
+  cli.py                    single entry point (train / evaluate / benchmark / compare / config)
+  config.py                 constants (50 °C fluid props), data paths, results/<arch>/<run>/ layout
   losses.py                 discounted physics loss
-  data/
-    physics.py              differentiable PyTorch port of PyDHN's Darcy–Weisbach φ, ∂φ/∂ṁ
-    network_operators.py    builds cycle matrix B, incidence A, internal-loop mask (once)
-  model/
+  datasets.py               sample construction, timestep split, operator cache
+  checkpoints.py            save/load weights together with their model kwargs
+
+  physics/                  THE EQUATIONS (the root data/ folder holds the numbers)
+    darcy.py                differentiable PyTorch port of PyDHN's Darcy–Weisbach φ, ∂φ/∂ṁ
+    operators.py            builds cycle matrix B, incidence A, internal-loop mask (once)
+    pressure.py             least-squares pressure reconstruction from Δp
+
+  solvers/                  SHARED solver machinery
+    physics_base.py         DHNPhysicsBase: edge_flow, pipe_dp, dp_der, residual
+    newton.py               NewtonSolver — pure physics, the control condition
     attention.py            edge-biased multi-head self-attention (paper's block)
-    unrolled_solver.py      the K-step Newton-base + learned-refinement solver
     stability.py            velocity cap + Armijo (eval-time stabilizers)
+
+  approaches/               ONE PACKAGE PER LEARNED APPROACH
+    hyperparams.py          knob machinery (dataclasses <-> YAML <-> --set)
+    __init__.py             registry; resolves model/trainer lazily
+    unrolled/               GNN correction at every one of K steps (original)
+      hparams.py            UnrolledConfig: model + train knobs
+      model.py              DHNUnrolledSolver
+      train.py              deep-supervised training loop + fit()
+    initializer/            GNN once, then exact Newton (current)
+      hparams.py            InitializerConfig
+      model.py              DHNInitializerSolver
+      train.py              regression on a_star + fit()
+    predictor/              GNN once, NO Newton (the ablation)
+      hparams.py            PredictorConfig
+      model.py              DHNPredictorSolver
+      train.py              physics-residual training + fit()
+
+  reporting/                evaluate, compare (per-run) + benchmark, full_report (cross-approach)
+configs/                    editable YAML recipes, one per approach
+datagen/                    the PyDHN simulator that MAKES the ground truth
 data/
   network/                  topology + pipe geometry (Verbier, 1352 nodes / 1514 edges)
   measurements/             real boundary snapshot
   weather/                  cached outdoor temperature (for reproducible generation)
-  solved_steady_v4/         PyDHN ground-truth outputs (git-ignored, ~82 MB)
+  solved_<version>/         published ground truth, from datagen (git-ignored, ~1.5 GB)
+  raw_runs/                 full datagen output dirs (git-ignored)
 docs/                       architecture mapping, spike plan, status/findings
 tests/                      verification gates (physics core + model invariants)
-results/                    evaluation figure + metrics
+results/
+  <arch>/<run>/             config.yaml, model.pt, metrics.txt, pred-*.csv, model_eval.png
+  benchmark.txt             cross-approach, so it belongs to no single one
+  report_data.json          "
 ```
 
 ## Setup
@@ -84,13 +121,104 @@ python tests/run_gates.py
 # 2. verify the model layer invariants (mass conservation, gradients, ...) — 11 checks
 python tests/run_model_smoke.py
 
-# 3. evaluate the (untrained, Newton-base) solver vs PyDHN -> results/
-python -m dhn_gnn.evaluate
+# 3. train an approach -> results/<arch>/<run>/
+python -m dhn_gnn.cli train --arch initializer --run default   # GNN + Newton polish
+python -m dhn_gnn.cli train --arch unrolled    --run default   # GNN every step
+python -m dhn_gnn.cli train --arch predictor   --run default   # GNN only, no Newton
 
-# 4. (optional) regenerate the synthetic dataset — reproducible, seeded, offline
-python -m dhn_gnn.generate --version steady_v4_regen        # full 745-step run
-python -m dhn_gnn.generate --steps 24 --version smoke       # quick check
+# 4. score it -> results/<arch>/<run>/{metrics.txt, pred-*.csv, model_eval.png}
+python -m dhn_gnn.cli evaluate --arch initializer --run default
+python -m dhn_gnn.cli compare  --arch initializer --run default
+
+# 5. all approaches vs PyDHN on identical timesteps -> results/benchmark.txt
+python -m dhn_gnn.cli benchmark
+
+# 6. (optional) regenerate the ground-truth dataset — simulates AND publishes
+python -m datagen.run --full-year --output-dir data/raw_runs/steady   # ~10 HOURS
 ```
+
+### Dataset generation
+
+`datagen/` is the simulator that produces the PyDHN ground truth the models are
+trained against. It is deliberately **outside** `dhn_gnn/`: it shares nothing with
+the model code but the topology on disk, and pulls generation-only dependencies
+(meteostat, pydhn's thermal solver) that the training path must not import.
+
+**One command.** It simulates, then publishes automatically:
+
+```bash
+python -m datagen.run --full-year --output-dir data/raw_runs/steady   # ~10 hours
+```
+
+That leaves you with two directories, and both matter:
+
+| | what | keep? |
+|---|---|---|
+| `data/raw_runs/steady/` | the full simulation — `full_network_state/`, `timeseries/`, `schedules/`, `weather_cache/`, `run_metadata.json` | **yes** — holds the per-pipe temperatures and metadata; regenerating is another 10 h |
+| `data/solved_steady/` | the flat CSVs + `history.json` that `dhn_gnn` reads | yes — this is `config.GEN_DATA_DIR` |
+
+`--version steady` is the default, matching `config.GEN_DATA_VERSION`, so nothing
+needs editing after a normal run. Useful variations:
+
+```bash
+python -m datagen.run --output-dir data/raw_runs/demo --version demo  # 3-day default
+python -m datagen.run --full-year --move                # relocate CSVs, save ~1.5 GB
+python -m datagen.run --full-year --no-publish          # simulate only
+python -m datagen.export data/raw_runs/steady --force   # (re)publish an existing run
+```
+
+If `data/solved_steady/` already exists, the automatic publish **stops rather than
+overwriting** — the simulation is still complete and safe on disk, and the message
+tells you to finish with `--force` or a different `--version`. Pass `--force-publish`
+up front if you know you want to replace it.
+
+Publishing is a separate, checked step because doing it by hand is how the shipped
+dataset ended up broken: only 4 of 11 CSVs were copied (`nodes-pressure.csv` was
+missed, silently breaking `evaluate` and the full report), and the `history.json`
+left in place still described an older 745-step dataset while the CSVs held 8760
+rows. `publish` checks the required files and rebuilds `history.json` from the run
+that actually produced the data.
+
+> **This simulation is thermohydraulic** — each pipe carries its own temperature,
+> so ρ and μ vary across the network, while `dhn_gnn` currently assumes a fixed
+> 50 °C. That mismatch is why `tests/run_gates.py` Gate 5 fails on this data. The
+> run's `edges-temperature.csv` is what a per-pipe fix would need.
+
+### Hyperparameters
+
+Every knob is declared in its approach's config dataclass
+(`dhn_gnn/approaches/<arch>/hparams.py`) and resolved in this order:
+
+```
+dataclass defaults  ->  --config file.yaml  ->  named flags  ->  --set key=value
+```
+
+`configs/unrolled.yaml` and `configs/initializer.yaml` are commented, editable
+copies of the defaults — the place to look when you want to see every knob at
+once. They are starting points, not the source of truth: leaving them out
+changes nothing, because the dataclasses hold the same values.
+
+Nothing needs a source edit:
+
+```bash
+# see the resolved recipe without training
+python -m dhn_gnn.cli config --arch unrolled --set K=25 --set model.newton_mode=diagonal
+
+# sweep, each into its own directory
+python -m dhn_gnn.cli train --arch initializer --run d128 --set model.d_model=128
+python -m dhn_gnn.cli train --arch initializer --run lr4  --set lr=1e-4
+
+# reproduce a finished run from its own output
+python -m dhn_gnn.cli train --arch initializer --run rerun \
+    --config results/initializer/d128/config.yaml
+```
+
+A bare key works when it is unambiguous (`--set K=25`); qualify it otherwise
+(`--set model.d_model=128`). An unknown key is an **error** listing the valid
+ones — a typo can never silently train the default and report it as your run.
+
+The fully resolved `config.yaml` is written next to the weights it produced, so
+every run in `results/` is reproducible from its own directory.
 
 ## Results (Newton-base solver vs PyDHN, 373 timesteps)
 
@@ -110,8 +238,8 @@ the *learned* component helps here. See findings below.
 
 - **Inputs** (`data/network`, `data/measurements`, `data/weather`) are small and tracked in git.
 - **Solved outputs** (`data/solved_*`) are ~82 MB each and **git-ignored** — regenerate with
-  `python -m dhn_gnn.generate`, or restore from backup / Git LFS.
-- The canonical dataset is **`steady_v4`**: a hydraulics-only run (`with_thermal=False`),
+  `python -m datagen.run` + `python -m datagen.export`, or restore from backup / Git LFS.
+- The canonical dataset is **`steady`**: a hydraulics-only run (`with_thermal=False`),
   all substations mass-flow-controlled, friction evaluated isothermally at **50 °C**
   (hence the exact fluid constants in `config.py`). Units are SI throughout (flow kg/s,
   pressure Pa, length m, roughness mm).

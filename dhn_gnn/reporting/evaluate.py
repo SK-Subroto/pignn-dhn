@@ -33,22 +33,43 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
-from dhn_gnn.data.pressure import PressureReconstructor
-from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
-from dhn_gnn.train import load_checkpoint
+from dhn_gnn.physics import operators as netops
+from dhn_gnn.physics.pressure import PressureReconstructor
+from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
+from dhn_gnn.checkpoints import load_checkpoint
 
+# Output directory for THIS invocation. Rebound by main() to
+# results/<arch>/<run>/ so scoring one approach can no longer overwrite the
+# CSVs, figure and metrics of another; it stays at results/ only for the
+# module-level default used by direct imports.
 RES = config.RESULTS_DIR
 
 
-def run(model, ops, timesteps, rec, p_true_df, tol=None):
-    """Roll the model over `timesteps`; return raw per-timestep predictions."""
+def _use_run_dir(arch, run):
+    """Point every output in this module at one approach's run directory."""
+    global RES
+    RES = config.run_dir(arch, run)
+    RES.mkdir(parents=True, exist_ok=True)
+    return RES
+
+
+def run(model, ops, timesteps, rec, p_true_df, tol=None, flow_df=None, device=None):
+    """
+    Roll the model over `timesteps`; return raw per-timestep predictions.
+
+    `flow_df` is passed in rather than re-read: the full-year mass-flow CSV is
+    ~260 MB, and this is called once per variant (test / train / baseline).
+    """
     Z = ops.B[ops.internal_loops].t().float()
     Gproj = torch.linalg.inv(Z.t() @ Z) @ Z.t()
-    df = pd.read_csv(config.MASS_FLOW_CSV, index_col=0)[ops.edge_names]
-    K = model.K
+    if device is not None:
+        Z, Gproj = Z.to(device), Gproj.to(device)
+    df = flow_df if flow_df is not None else \
+        pd.read_csv(config.MASS_FLOW_CSV, index_col=0)[ops.edge_names]
+    # unrolled solver reports K steps; the initializer reports the guess + n_newton
+    K = getattr(model, "K", None) or (model.n_newton + 1)
 
     flow, dp, press, cs, true_c = [], [], [], [], []
     conv, steps_used, final_res = [], [], []
@@ -57,19 +78,23 @@ def run(model, ops, timesteps, rec, p_true_df, tol=None):
     with torch.no_grad():
         for ts in timesteps:
             mt = torch.as_tensor(df.iloc[ts].to_numpy(np.float64)).float()
+            if device is not None:
+                mt = mt.to(device)
             a_star = Gproj @ mt
             mdot0 = mt - Z @ a_star           # boundary-feasible, zero-circulation start
             mdot_out, terms, c_hist = model(mdot0, tol=tol)
 
-            dp_pred = model._pipe_dp(mdot_out)
+            dp_pred = model.pipe_dp(mdot_out)
             anchors = torch.as_tensor(
                 p_true_df.iloc[ts].to_numpy(np.float64)[rec.anchors])
-            p_pred = rec(dp_pred.to(torch.float64), anchors)
+            # pressure reconstruction stays on CPU in float64: it is a one-shot
+            # dense solve, and consumer GPUs run fp64 at a small fraction of fp32
+            p_pred = rec(dp_pred.detach().cpu().to(torch.float64), anchors)
 
-            flow.append(mdot_out.numpy())
-            dp.append(dp_pred.numpy())
+            flow.append(mdot_out.cpu().numpy())
+            dp.append(dp_pred.cpu().numpy())
             press.append(p_pred.numpy())
-            cs.append(c_hist[-1].numpy()); true_c.append(a_star.numpy())
+            cs.append(c_hist[-1].cpu().numpy()); true_c.append(a_star.cpu().numpy())
 
             curve = [t.abs().max().item() for t in terms]
             steps_used.append(len(curve))
@@ -124,10 +149,16 @@ def score(d, ops, dp_true_df, p_true_df, flow_true_df):
     )
 
 
-def write_csvs(d, ops):
-    """Predicted flow / delta_p / pressure, aligned 1:1 with the PyDHN CSVs."""
+def write_csvs(d, ops, index=None):
+    """
+    Predicted flow / delta_p / pressure, aligned 1:1 with the PyDHN CSVs.
+
+    `index` carries the reference file's own row labels (timestamps in the full-year
+    dataset) so the output joins directly against the ground truth; without it the
+    rows would be labelled by integer position, which no longer identifies an hour.
+    """
     RES.mkdir(parents=True, exist_ok=True)
-    ts = d["timesteps"]
+    ts = d["timesteps"] if index is None else index
     out = {
         "pred-mass_flow.csv": pd.DataFrame(d["flow"], index=ts, columns=ops.edge_names),
         "pred-delta_p.csv": pd.DataFrame(d["dp"], index=ts, columns=ops.edge_names),
@@ -241,20 +272,46 @@ def _block(title, m):
     ]
 
 
-def main():
+def _standalone_args():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tol", type=float, default=config.EVAL_TOL_PA,
                     help="early-exit tolerance in Pa (0 disables)")
     ap.add_argument("--split-every", type=int, default=5)
     ap.add_argument("--max-test", type=int, default=0,
                     help="cap the number of test timesteps (0 = all)")
-    args = ap.parse_args()
+    # Taken from the registry, so a new approach is scoreable the moment it is
+    # registered -- a hardcoded list here silently excludes it from evaluation.
+    from dhn_gnn import approaches
+    ap.add_argument("--arch", choices=approaches.ARCH_CHOICES, default="initializer",
+                    help="; ".join(f"'{n}' = {a.summary}"
+                                   for n, a in approaches.APPROACHES.items()))
+    ap.add_argument("--run", default="default",
+                    help="which run of --arch to score; outputs land in "
+                         "results/<arch>/<run>/")
+    ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cpu")
+    ap.add_argument("--ckpt", type=Path, default=None,
+                    help="checkpoint to evaluate (default: the one for --arch)")
+    return ap.parse_args()
+
+
+def main(args=None):
+    args = args if args is not None else _standalone_args()
     tol = args.tol if args.tol > 0 else None
+    dev = config.get_device(args.device)
 
     ops = netops.build_operators()
-    model, ck = load_checkpoint(ops, config.CHECKPOINT, DHNUnrolledSolver)
+    run_name = getattr(args, "run", "default")
+    _use_run_dir(args.arch, run_name)
+
+    from dhn_gnn import approaches
+    model_cls = approaches.get(args.arch).model_cls()
+    ckpt_path = args.ckpt or config.resolve_checkpoint(args.arch, run_name)
+    model, ck = load_checkpoint(ops, ckpt_path, model_cls)
+    model = model.to(dev)
     meta = ck.get("meta", {})
-    print(f"loaded {config.CHECKPOINT}  kwargs={ck['model_kwargs']}")
+    print(f"loaded {ckpt_path}  arch={args.arch}  run={run_name}  device={dev}  "
+          f"kwargs={ck['model_kwargs']}")
+    print(f"writing results to {RES}")
 
     flow_true = pd.read_csv(config.MASS_FLOW_CSV, index_col=0)[ops.edge_names]
     dp_true = pd.read_csv(config.DELTA_P_CSV, index_col=0)[ops.edge_names]
@@ -263,55 +320,92 @@ def main():
     train_ts, test_ts = config.split_timesteps(len(flow_true), args.split_every)
     if args.max_test:
         test_ts = test_ts[:args.max_test]
-    # score train on a comparable-size subset so the two blocks are like-for-like
-    train_eval_ts = train_ts[::max(1, len(train_ts) // len(test_ts))][:len(test_ts)]
+
+    # The TRAIN block must use the timesteps the checkpoint was ACTUALLY fitted on,
+    # recorded at save time -- not a freshly recomputed split. Those differ whenever
+    # the dataset changed after training (e.g. the 745-row January file being
+    # replaced by the 8760-row full year), and recomputing would silently relabel
+    # unseen data as "seen" and destroy the whole point of the comparison.
+    fitted_ts = np.asarray(meta.get("train_ts", []), dtype=int)
+    fitted_ts = fitted_ts[fitted_ts < len(flow_true)]
+    if len(fitted_ts):
+        train_eval_ts = fitted_ts[:len(test_ts)]
+        train_label = "TRAIN (actually seen during fitting)"
+    else:
+        train_eval_ts = train_ts[::max(1, len(train_ts) // len(test_ts))][:len(test_ts)]
+        train_label = "TRAIN-SPLIT (checkpoint recorded no train_ts; NOT verified as seen)"
 
     rec = PressureReconstructor(ops)
     print(f"pressure anchors: {rec.anchor_node_names(ops)} "
           f"({len(rec.anchors)} pipe-only components)")
 
-    # untrained baseline: same architecture, zero-init heads == damped Newton
+    # Untrained baseline, same architecture. Both models zero-init their output
+    # layer, so the untrained network contributes nothing and the baseline is pure
+    # physics: damped diagonal Newton for 'unrolled', cold-start full Newton (c0=0)
+    # for 'initializer'. That is the honest thing for the learned part to beat.
     torch.manual_seed(0)
-    baseline = DHNUnrolledSolver(ops, **ck["model_kwargs"]).float()
+    baseline = model_cls(ops, **ck["model_kwargs"]).float().to(dev)
     baseline.eval()
 
     print(f"evaluating {len(test_ts)} test / {len(train_eval_ts)} train timesteps"
           f"  (tol={tol})")
-    d_test = run(model, ops, test_ts, rec, p_true, tol=tol)
-    d_train = run(model, ops, train_eval_ts, rec, p_true, tol=tol)
-    d_base = run(baseline, ops, test_ts, rec, p_true, tol=tol)
+    d_test = run(model, ops, test_ts, rec, p_true, tol, flow_true, dev)
+    d_train = run(model, ops, train_eval_ts, rec, p_true, tol, flow_true, dev)
+    d_base = run(baseline, ops, test_ts, rec, p_true, tol, flow_true, dev)
 
     m_test = score(d_test, ops, dp_true, p_true, flow_true)
     m_train = score(d_train, ops, dp_true, p_true, flow_true)
     m_base = score(d_base, ops, dp_true, p_true, flow_true)
 
-    write_csvs(d_test, ops)
+    write_csvs(d_test, ops, index=flow_true.index[test_ts])
 
-    verdict = (
-        "the trained head BEATS the untrained damped-Newton baseline"
-        if m_test["res_mean"] < m_base["res_mean"] else
-        "the trained head DOES NOT beat the untrained damped-Newton baseline -- the "
-        "physics base step is doing all the work; the learned refinement is not "
-        "contributing on held-out data"
-    )
+    # Under early exit, STEPS is the meaningful comparison, not terminal residual:
+    # both models stop as soon as they cross `tol`, so the faster one stops sooner
+    # and reports a HIGHER residual precisely because it wasted fewer steps
+    # overshooting. Ranking by residual would credit the slower model.
+    step_gain = m_base["steps_mean"] - m_test["steps_mean"]
+    if tol:
+        verdict = (
+            f"the learned component SAVES {step_gain:.2f} solver steps vs the "
+            f"untrained physics baseline ({m_test['steps_mean']:.2f} vs "
+            f"{m_base['steps_mean']:.2f}) at the same {tol:g} Pa tolerance"
+            if step_gain > 0.05 else
+            f"the learned component does NOT reduce solver steps "
+            f"({m_test['steps_mean']:.2f} vs {m_base['steps_mean']:.2f}) -- the "
+            f"physics step is doing the work"
+        )
+    else:
+        verdict = (
+            "the trained model reaches a LOWER residual than the untrained baseline"
+            if m_test["res_mean"] < m_base["res_mean"] else
+            "the trained model does NOT beat the untrained physics baseline"
+        )
     lines = [
         "=== Unrolled DHN hydraulic solver vs PyDHN ===",
-        f"checkpoint : {config.CHECKPOINT.name}  K={ck['model_kwargs']['K']}  "
-        f"step_scale={ck['model_kwargs']['step_scale']}",
+        f"checkpoint : {ckpt_path.name}  arch={args.arch}  "
+        + "  ".join(f"{k}={v}" for k, v in ck["model_kwargs"].items()
+                    if k in ("K", "n_newton", "step_scale", "newton_mode")),
         f"training   : {meta.get('n_train','?')} timesteps, {meta.get('epochs','?')} epochs, "
         f"lr={meta.get('lr','?')}, best epoch {meta.get('best_epoch','?')}",
         f"split      : every {args.split_every}th timestep held out",
         f"early exit : tol={tol} Pa" if tol else "early exit : disabled",
         "",
         *_block("TEST (held out)", m_test),
-        *_block("TRAIN (seen during fitting)", m_train),
-        *_block("BASELINE untrained = damped diagonal Newton, TEST", m_base),
+        *_block(train_label, m_train),
+        *_block("BASELINE untrained (zero-init head = pure physics), TEST", m_base),
         "-- Verdict --",
-        f"  residual: trained {m_test['res_mean']:.1f} Pa vs baseline "
-        f"{m_base['res_mean']:.1f} Pa on held-out timesteps",
+        f"  steps   : trained {m_test['steps_mean']:.2f} vs baseline "
+        f"{m_base['steps_mean']:.2f}",
+        f"  flow MAE: trained {m_test['mae']:.4e} vs baseline {m_base['mae']:.4e} kg/s",
+        f"  residual: trained {m_test['res_mean']:.1f} vs baseline "
+        f"{m_base['res_mean']:.1f} Pa"
+        + ("   (NOT a quality ranking -- see note below)" if tol else ""),
         f"  => {verdict}",
         "",
         "-- Notes --",
+        "  * with early exit on, terminal residual is NOT comparable between models:",
+        "    each stops the moment it crosses the tolerance, so a faster solver stops",
+        "    sooner and reports a higher residual. Compare steps (and flow error).",
         "  * dp/pressure are scored on pipes only: the 151 substation/producer edges",
         "    are masked to zero by the model. On pipes the reference total dp equals",
         "    friction dp (hydrostatic is 0 in this flat network).",

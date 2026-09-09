@@ -1,0 +1,46 @@
+# Pure predictor -- one GNN pass, NO Newton. The ablation.
+#
+#   python -m dhn_gnn.cli train --arch predictor --run myrun \
+#       --config configs/predictor.yaml
+#
+# What this exists to answer: the initializer's raw guess sits at a median 277 Pa
+# before any Newton step, against a 50 Pa tolerance. Can the network close that
+# 5.5x gap on its own? If it plateaus, "pure learning is insufficient, exact steps
+# are necessary" is a clean result that justifies the initializer's design.
+#
+# The architecture is identical to the initializer's on purpose, so any difference
+# in outcome is the Newton polish and not a different network.
+
+arch: predictor
+
+model:
+  d_model: 64             # attention width
+  n_heads: 4              # must divide d_model
+  num_attn_layers: 2
+
+  # Which nodes the embedding and attention run over.
+  #   all    every node (1352)
+  #   cycle  only nodes within cycle_hops of an internal loop
+  # Only 306 of 1352 nodes touch a cycle, and edges outside a loop are multiplied
+  # by zero when edges are aggregated into loops. This matters more here than for
+  # the initializer: with no Newton to absorb a mediocre guess, capacity spent on
+  # the ~78% of the graph that carries no loop is capacity not spent on the answer.
+  node_scope: all
+  cycle_hops: 1           # 0 = strict cycle subgraph; each hop adds a feeding ring
+
+train:
+  # residual = minimize max|B.phi(mdot)|, the 50 Pa quantity this is judged on.
+  #            The honest objective, and the reason this approach exists.
+  # a_star   = regress the exact loop-space target, as the initializer does.
+  #            Trains more easily but optimizes kg/s, not Pa -- observed to lower
+  #            its own loss while the residual gets WORSE.
+  loss: residual
+  p_ref: 100000.0         # Pa, normalizes the residual loss
+
+  epochs: 60              # no closed-form target to hit, so it needs longer
+  lr: 0.001
+  clip: 1.0               # gradient-norm clip
+  seed: 0
+  n_train: 200            # subsample this many training timesteps (0 = all)
+  split_every: 5          # every Nth timestep is held out for test
+  device: cpu

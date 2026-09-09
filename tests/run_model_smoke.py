@@ -22,9 +22,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dhn_gnn import config
-from dhn_gnn.data import network_operators as netops
+from dhn_gnn.physics import operators as netops
 from dhn_gnn.losses import discounted_physics_loss
-from dhn_gnn.model.unrolled_solver import DHNUnrolledSolver
+from dhn_gnn.approaches.unrolled.model import DHNUnrolledSolver
 
 torch.manual_seed(0)
 _results = []
